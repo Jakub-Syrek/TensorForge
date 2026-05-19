@@ -9,7 +9,12 @@ const state = {
   maskDirty: false,
   lastResultBlob: null,  // last successful /api/edit response (for chaining)
   userAborted: false,
+  accelAvailable: false,  // set true when /api/health reports accel config
 };
+
+// In-memory history of successful edits. Cleared on page refresh.
+const history = [];
+const HISTORY_MAX = 20;
 
 const imgCanvas = $("imgCanvas");
 const maskCanvas = $("maskCanvas");
@@ -20,6 +25,12 @@ const maskCtx = maskCanvas.getContext("2d");
 fetch("/api/health").then(r => r.json()).then(h => {
   const dev = h.cuda_available ? `${h.device} · sm_${(h.capability || []).join("")}` : "CPU";
   $("health").textContent = `torch ${h.torch} · ${dev}`;
+  // Reveal the accel toggle only if the server has a LoRA configured.
+  if (h.accel && h.accel.repo) {
+    state.accelAvailable = true;
+    $("accelRow").classList.remove("hidden");
+    $("accelInfo").textContent = `${h.accel.repo.split("/").pop()}`;
+  }
 }).catch(() => { $("health").textContent = "health: server unreachable"; });
 
 // --- file input + drop ---------------------------------------------------
@@ -52,6 +63,12 @@ function fitCanvases(w, h) {
   imgCanvas.width = maskCanvas.width = w;
   imgCanvas.height = maskCanvas.height = h;
 }
+
+// --- accel toggle: when on, auto-pin steps to 8 (Hyper-SD default);
+// when off, auto-pin to 28 (full quality). User can still override manually.
+$("accelToggle").addEventListener("change", (e) => {
+  $("steps").value = e.target.checked ? "8" : "28";
+});
 
 // --- mode toggle ---------------------------------------------------------
 document.querySelectorAll(".seg-btn").forEach(btn => {
@@ -116,6 +133,12 @@ async function runEdit() {
   fd.append("steps", $("steps").value);
   fd.append("guidance", $("guidance").value);
   if ($("seed").value) fd.append("seed", $("seed").value);
+  // use_accel: send the checkbox state IF the toggle is visible (accel
+  // configured server-side). Otherwise omit — backend defaults to True
+  // which is a no-op when no LoRA is loaded.
+  if (state.accelAvailable) {
+    fd.append("use_accel", $("accelToggle").checked ? "true" : "false");
+  }
   if (state.mode === "inpaint") fd.append("mask", await maskBlob(), "mask.png");
 
   $("run").disabled = true;
@@ -150,6 +173,16 @@ async function runEdit() {
     } else {
       setStatus("done", "ok");
     }
+    addHistoryEntry({
+      resultBlob: blob,
+      inputFile: state.imageFile,
+      prompt,
+      seed: usedSeed,
+      mode: state.mode,
+      steps: $("steps").value,
+      guidance: $("guidance").value,
+      useAccel: state.accelAvailable ? $("accelToggle").checked : null,
+    });
   } catch (e) {
     if (state.userAborted) {
       setStatus("aborted", "err");
@@ -205,6 +238,76 @@ $("refresh").addEventListener("click", () => {
   $("resultActions").classList.add("hidden");
   state.lastResultBlob = null;
   setStatus("", "");
+});
+
+// --- history: ring buffer of last HISTORY_MAX successful edits ---------
+function addHistoryEntry(entry) {
+  const id = Date.now();
+  const resultUrl = URL.createObjectURL(entry.resultBlob);
+  // Store a thumbnail-ish version by reusing the full blob URL — small
+  // enough for in-memory storage of ~20 entries, and lets us treat the
+  // history thumb as the canonical reference if user wants to re-load it.
+  const item = { id, resultUrl, ...entry };
+  history.unshift(item);
+  while (history.length > HISTORY_MAX) {
+    const dropped = history.pop();
+    URL.revokeObjectURL(dropped.resultUrl);
+  }
+  renderHistory();
+}
+
+function renderHistory() {
+  const strip = $("historyStrip");
+  const row = $("historyRow");
+  strip.innerHTML = "";
+  if (history.length === 0) {
+    row.classList.add("hidden");
+    return;
+  }
+  row.classList.remove("hidden");
+  for (const item of history) {
+    const el = document.createElement("div");
+    el.className = "history-item";
+    el.style.backgroundImage = `url(${item.resultUrl})`;
+    el.title = `${item.mode} · seed ${item.seed}\n"${item.prompt}"\nclick to load as input`;
+    const badge = document.createElement("span");
+    badge.className = "history-mode";
+    badge.textContent = item.mode === "kontext" ? "K" : "F";
+    el.appendChild(badge);
+    el.addEventListener("click", () => loadHistoryEntry(item));
+    strip.appendChild(el);
+  }
+}
+
+function loadHistoryEntry(item) {
+  // Re-wrap the stored result blob as a fresh File and feed it through
+  // the canonical upload pipeline — exactly the same path as "use as
+  // input" but from arbitrary history depth.
+  const file = new File([item.resultBlob], `history-${item.id}.png`, { type: "image/png" });
+  loadFile(file);
+  $("prompt").value = item.prompt || "";
+  $("seed").value = item.seed || "";
+  if (item.mode === "kontext" || item.mode === "inpaint") {
+    document.querySelectorAll(".seg-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === item.mode));
+    state.mode = item.mode;
+    $("brushRow").classList.toggle("hidden", item.mode !== "inpaint");
+    maskCanvas.style.pointerEvents = item.mode === "inpaint" ? "auto" : "none";
+  }
+  if (item.steps) $("steps").value = item.steps;
+  if (item.guidance) $("guidance").value = item.guidance;
+  if (state.accelAvailable && item.useAccel !== null) {
+    $("accelToggle").checked = item.useAccel;
+  }
+  // Drop the displayed result so it's clear the next edit starts fresh.
+  $("result").removeAttribute("src");
+  $("resultActions").classList.add("hidden");
+  setStatus(`loaded · seed ${item.seed}`, "ok");
+}
+
+$("historyClear").addEventListener("click", () => {
+  for (const item of history) URL.revokeObjectURL(item.resultUrl);
+  history.length = 0;
+  renderHistory();
 });
 
 // --- chain: use current result as the next input -----------------------

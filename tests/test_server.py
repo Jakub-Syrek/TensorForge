@@ -183,6 +183,26 @@ def test_abort_when_active_returns_200_and_sets_flag(client):
         srv.job_progress.finish()
 
 
+def test_edit_passes_use_accel_through_to_request(client, stub_editor):
+    """The use_accel form field should land in EditRequest.use_accel and
+    default to True if the caller omits it."""
+    r = client.post(
+        "/api/edit",
+        data={"mode": "kontext", "prompt": "x", "steps": "1", "use_accel": "false"},
+        files={"image": ("in.png", _png_bytes(), "image/png")},
+    )
+    assert r.status_code == 200
+    assert stub_editor.last_request.use_accel is False
+
+    r = client.post(
+        "/api/edit",
+        data={"mode": "kontext", "prompt": "x", "steps": "1"},
+        files={"image": ("in.png", _png_bytes(), "image/png")},
+    )
+    assert r.status_code == 200
+    assert stub_editor.last_request.use_accel is True
+
+
 def test_edit_returns_used_seed_header_when_caller_supplies_seed(client, stub_editor):
     r = client.post(
         "/api/edit",

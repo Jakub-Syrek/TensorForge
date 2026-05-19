@@ -80,6 +80,10 @@ class EditRequest:
     steps: int = 28
     guidance: float = 3.5
     seed: int | None = None
+    # When True and an accel LoRA is configured, enable the adapter for this
+    # edit; when False, disable it (lets the UI flip between fast 8-step
+    # and full 28-step quality without reloading the pipeline).
+    use_accel: bool = True
 
 
 class FluxEditor:
@@ -156,19 +160,32 @@ class FluxEditor:
             torch_dtype=self._dtype,
         )
 
-    def _apply_accel(self, pipe) -> None:  # pragma: no cover — needs diffusers pipe
-        """Load and fuse the acceleration LoRA, if configured.
+    ACCEL_ADAPTER_NAME = "accel"
 
-        Fusing (rather than keeping it as a separate adapter) bakes the delta
-        into the base weights — slightly faster inference, no per-call adapter
-        switching, and `enable_model_cpu_offload` doesn't have to chase the
-        adapter modules separately.
+    def _apply_accel(self, pipe) -> None:  # pragma: no cover — needs diffusers pipe
+        """Load the acceleration LoRA as a toggleable adapter (NOT fused).
+
+        Fused would be slightly faster but bakes the LoRA permanently into
+        weights — incompatible with per-edit on/off toggling from the UI.
+        We start with the adapter active by default; edit() flips it per
+        request via _set_accel_active().
         """
         if self.accel is None:
             return
-        pipe.load_lora_weights(self.accel.repo, weight_name=self.accel.weight_name)
-        pipe.fuse_lora(lora_scale=self.accel.scale)
-        pipe.unload_lora_weights()
+        pipe.load_lora_weights(
+            self.accel.repo,
+            weight_name=self.accel.weight_name,
+            adapter_name=self.ACCEL_ADAPTER_NAME,
+        )
+        pipe.set_adapters([self.ACCEL_ADAPTER_NAME], adapter_weights=[self.accel.scale])
+
+    def _set_accel_active(self, pipe, enabled: bool) -> None:  # pragma: no cover — GPU pipe
+        if self.accel is None:
+            return
+        if enabled:
+            pipe.set_adapters([self.ACCEL_ADAPTER_NAME], adapter_weights=[self.accel.scale])
+        else:
+            pipe.set_adapters([])
 
     def _apply_memory_savers(self, pipe) -> None:  # pragma: no cover — GPU branches
         if torch.cuda.is_available():
@@ -224,6 +241,9 @@ class FluxEditor:
             return callback_kwargs
 
         try:
+            pipe = self.kontext if req.mode == "kontext" else self.fill
+            self._set_accel_active(pipe, req.use_accel)
+
             if req.mode == "kontext":
                 result = self.kontext(
                     prompt=req.prompt,

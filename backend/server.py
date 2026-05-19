@@ -106,6 +106,7 @@ async def edit(
     steps: int = Form(28),
     guidance: float = Form(3.5),
     seed: int | None = Form(None),
+    use_accel: bool = Form(True),
 ) -> Response:
     if mode not in {"kontext", "inpaint"}:
         raise HTTPException(400, f"mode must be 'kontext' or 'inpaint', got {mode!r}")
@@ -140,6 +141,7 @@ async def edit(
         steps=int(steps),
         guidance=float(guidance),
         seed=used_seed,
+        use_accel=bool(use_accel),
     )
 
     job_progress.start(total=int(steps), mode=mode)
