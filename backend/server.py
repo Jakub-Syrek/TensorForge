@@ -29,12 +29,14 @@ from backend.imgutils import fit_long_edge, image_to_png_bytes
 from backend.pipeline import QUANT_MODE, EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress, query_gpu_stats
 
-# Cap on the longest edge of the input image. 512 is the conservative
-# default for a 16 GB 5080 with cpu_offload — empirically 1024 saturates
-# VRAM (~95%) and degrades to ~470s/step due to PCIe thrashing; 768 is
-# borderline; 512 leaves real headroom. Detail is bounded by Flux's
-# internal latent resolution anyway. Override with FLUX_MAX_EDGE.
-MAX_EDGE = int(os.environ.get("FLUX_MAX_EDGE", "512"))
+# Cap on the longest edge of the input image. The right value depends on
+# whether NF4 is active:
+#   bf16 + cpu_offload (default):  512 — bigger thrashes PCIe (~470s/step)
+#   NF4 resident (FLUX_QUANT=4bit): 1024 — model fits in VRAM with headroom,
+#                                  detail is bounded by Flux's training
+#                                  resolution either way.
+# Override either default with FLUX_MAX_EDGE env var.
+MAX_EDGE = int(os.environ.get("FLUX_MAX_EDGE", "1024" if QUANT_MODE else "512"))
 
 app = FastAPI(title="AiPictureModifier")
 editor = FluxEditor()

@@ -7,6 +7,8 @@ const state = {
   drawing: false,
   brush: 40,
   maskDirty: false,
+  lastResultBlob: null,  // last successful /api/edit response (for chaining)
+  userAborted: false,
 };
 
 const imgCanvas = $("imgCanvas");
@@ -135,9 +137,9 @@ async function runEdit() {
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
     $("result").src = url;
-    const dl = $("download");
-    dl.href = url;
-    dl.classList.remove("hidden");
+    state.lastResultBlob = blob;
+    $("download").href = url;
+    $("resultActions").classList.remove("hidden");
     setStatus("done", "ok");
   } catch (e) {
     if (state.userAborted) {
@@ -191,8 +193,33 @@ $("refresh").addEventListener("click", () => {
   imgCanvas.width = maskCanvas.width = 0;
   imgCanvas.height = maskCanvas.height = 0;
   $("result").removeAttribute("src");
-  $("download").classList.add("hidden");
+  $("resultActions").classList.add("hidden");
+  state.lastResultBlob = null;
   setStatus("", "");
+});
+
+// --- chain: use current result as the next input -----------------------
+$("useAsInput").addEventListener("click", () => {
+  const blob = state.lastResultBlob;
+  if (!blob) return setStatus("no result to chain yet", "err");
+
+  // Wrap the blob as a File so the existing upload pipeline (loadFile)
+  // can ingest it identically to a fresh user upload.
+  const stamped = `chained-${Date.now()}.png`;
+  const file = new File([blob], stamped, { type: "image/png" });
+
+  loadFile(file);
+  // Clear UI surface for the next instruction. Keep mode + steps +
+  // guidance untouched; clear prompt and seed because (a) the previous
+  // prompt likely doesn't make sense on the new image, (b) the same
+  // seed on a different input produces a different but pseudo-random
+  // result anyway — better to start fresh.
+  $("prompt").value = "";
+  $("seed").value = "";
+  // Drop the displayed result — it's now the input.
+  $("result").removeAttribute("src");
+  $("resultActions").classList.add("hidden");
+  setStatus("chained — write the next instruction", "ok");
 });
 
 // --- progress polling ---------------------------------------------------
