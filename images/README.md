@@ -31,7 +31,7 @@ GitHub renders inline up to a few MB without slowdown. Keep screenshots:
 Relative path from repo root:
 
 ```markdown
-![UI overview](docs/screenshots/ui-overview.png)
+![UI overview](images/ui-overview.png)
 ```
 
 For side-by-side comparison use an HTML table — markdown image side-by-side
@@ -40,7 +40,7 @@ doesn't render reliably:
 ```markdown
 | before | after |
 |---|---|
-| ![](docs/screenshots/before.jpg) | ![](docs/screenshots/after.jpg) |
+| ![](images/before.jpg) | ![](images/after.jpg) |
 ```
 
 ## Privacy reminder
