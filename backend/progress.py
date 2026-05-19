@@ -121,8 +121,11 @@ def parse_nvsmi_line(line: str) -> GpuStats | None:
 
 
 def query_gpu_stats() -> GpuStats | None:
+    # nosec B603,B607 — nvidia-smi is OS-installed at a well-known location and
+    # already on PATH for any NVIDIA driver setup; args are static literals, no
+    # untrusted input interpolated.
     try:
-        out = subprocess.check_output(
+        out = subprocess.check_output(  # nosec B603 B607
             [
                 "nvidia-smi",
                 f"--query-gpu={_NVSMI_QUERY}",

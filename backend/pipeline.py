@@ -85,7 +85,7 @@ class FluxEditor:
         self._dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
         self.accel = accel if accel is not None else AccelConfig.from_env()
 
-    def _load_kontext(self):
+    def _load_kontext(self):  # pragma: no cover — requires GPU + 24 GB model
         from diffusers import FluxKontextPipeline
 
         pipe = self._from_pretrained(FluxKontextPipeline, KONTEXT_MODEL)
@@ -93,7 +93,7 @@ class FluxEditor:
         self._apply_memory_savers(pipe)
         return pipe
 
-    def _load_fill(self):
+    def _load_fill(self):  # pragma: no cover — requires GPU + 24 GB model
         from diffusers import FluxFillPipeline
 
         pipe = self._from_pretrained(FluxFillPipeline, FILL_MODEL)
@@ -101,7 +101,7 @@ class FluxEditor:
         self._apply_memory_savers(pipe)
         return pipe
 
-    def _from_pretrained(self, pipeline_cls, repo_id):
+    def _from_pretrained(self, pipeline_cls, repo_id):  # pragma: no cover — GPU
         """Load `repo_id` either in bf16 (default) or NF4 4-bit (FLUX_QUANT=4bit).
 
         When quantized, the transformer and T5 text encoder are constructed
@@ -110,7 +110,7 @@ class FluxEditor:
         from_pretrained doesn't accept a per-component quant config.
         """
         if not QUANT_MODE:
-            return pipeline_cls.from_pretrained(repo_id, torch_dtype=self._dtype)
+            return pipeline_cls.from_pretrained(repo_id, torch_dtype=self._dtype)  # nosec B615 - BFL is trusted upstream; pinning a revision would block legit upstream fixes for a single-user desktop app
 
         # Lazy imports — these pull bitsandbytes only when the user opts in.
         from diffusers import BitsAndBytesConfig as DiffusersBnbConfig
@@ -129,27 +129,28 @@ class FluxEditor:
             bnb_4bit_compute_dtype=self._dtype,
         )
 
-        transformer = FluxTransformer2DModel.from_pretrained(
+        # nosec B615 below x3 — BFL is trusted upstream; see comment in the bf16 branch above.
+        transformer = FluxTransformer2DModel.from_pretrained(  # nosec B615
             repo_id,
             subfolder="transformer",
             quantization_config=nf4_diffusers,
             torch_dtype=self._dtype,
         )
-        text_encoder_2 = T5EncoderModel.from_pretrained(
+        text_encoder_2 = T5EncoderModel.from_pretrained(  # nosec B615
             repo_id,
             subfolder="text_encoder_2",
             quantization_config=nf4_transformers,
             torch_dtype=self._dtype,
         )
 
-        return pipeline_cls.from_pretrained(
+        return pipeline_cls.from_pretrained(  # nosec B615
             repo_id,
             transformer=transformer,
             text_encoder_2=text_encoder_2,
             torch_dtype=self._dtype,
         )
 
-    def _apply_accel(self, pipe) -> None:
+    def _apply_accel(self, pipe) -> None:  # pragma: no cover — needs diffusers pipe
         """Load and fuse the acceleration LoRA, if configured.
 
         Fusing (rather than keeping it as a separate adapter) bakes the delta
@@ -163,7 +164,7 @@ class FluxEditor:
         pipe.fuse_lora(lora_scale=self.accel.scale)
         pipe.unload_lora_weights()
 
-    def _apply_memory_savers(self, pipe) -> None:
+    def _apply_memory_savers(self, pipe) -> None:  # pragma: no cover — GPU branches
         if torch.cuda.is_available():
             if QUANT_MODE:
                 # NF4 brings the whole pipeline under VRAM; offload would
@@ -176,18 +177,18 @@ class FluxEditor:
         pipe.vae.enable_tiling()
 
     @property
-    def kontext(self):
+    def kontext(self):  # pragma: no cover — triggers _load_kontext (GPU)
         if self._kontext is None:
             self._kontext = self._load_kontext()
         return self._kontext
 
     @property
-    def fill(self):
+    def fill(self):  # pragma: no cover — triggers _load_fill (GPU)
         if self._fill is None:
             self._fill = self._load_fill()
         return self._fill
 
-    def edit(self, req: EditRequest) -> Image.Image:
+    def edit(self, req: EditRequest) -> Image.Image:  # pragma: no cover — GPU inference
         generator = None
         if req.seed is not None:
             device = "cuda" if torch.cuda.is_available() else "cpu"

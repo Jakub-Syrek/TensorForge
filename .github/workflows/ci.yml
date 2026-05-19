@@ -14,6 +14,48 @@ env:
 
 jobs:
   lint-and-test:
+    name: lint + test (${{ matrix.os }} · py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff pytest pytest-cov hypothesis pillow fastapi httpx python-multipart
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format check (ruff)
+        run: ruff format --check .
+
+      - name: Syntax check (Python)
+        run: python -m compileall -q backend scripts tests
+
+      - name: Run tests with coverage
+        run: pytest --cov=backend --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+
+      - name: Upload coverage XML
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          retention-days: 7
+
+  security:
+    name: security (Bandit + pip-audit)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,20 +65,16 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install dev dependencies
+      - name: Install security tools
         run: |
           python -m pip install --upgrade pip
-          pip install ruff pytest pillow fastapi httpx python-multipart
+          pip install bandit pip-audit
 
-      - name: Lint (ruff)
-        run: ruff check .
+      - name: Bandit (static analysis)
+        # Skip: B404 (subprocess module — needed for nvidia-smi).
+        run: bandit -r backend scripts -ll --skip B404
 
-      - name: Format check (ruff)
-        run: ruff format --check .
-
-      - name: Syntax check (Python)
-        run: |
-          python -m compileall -q backend scripts tests
-
-      - name: Run tests
-        run: pytest -q
+      - name: pip-audit (dependency CVEs)
+        # Don't fail the build for advisories on torch nightly — community
+        # builds change daily and aren't always in the OSV feed yet.
+        run: pip-audit --requirement requirements.txt --skip-editable || true

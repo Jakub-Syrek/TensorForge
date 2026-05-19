@@ -21,13 +21,15 @@ TORCH_NIGHTLY_INDEX = "https://download.pytorch.org/whl/nightly/cu128"
 
 def run(cmd: list[str]) -> None:
     print(f"\n>>> {' '.join(cmd)}")
-    subprocess.check_call(cmd)
+    # nosec B603 — cmd is always a list constructed from sys.executable + pip
+    # args; no untrusted input, no shell interpretation.
+    subprocess.check_call(cmd)  # nosec B603
 
 
 def detect_blackwell() -> bool:
     """Return True when an RTX 50xx (sm_120) GPU is visible to nvidia-smi."""
     try:
-        out = subprocess.check_output(
+        out = subprocess.check_output(  # nosec B603 B607 — see backend/progress.py rationale
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
             text=True,
         )
