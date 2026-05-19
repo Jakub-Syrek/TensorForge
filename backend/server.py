@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -124,6 +125,13 @@ async def edit(
         # Mask is resized to match the image inside the pipeline; no resize here.
         mask_img = Image.open(io.BytesIO(await mask.read()))
 
+    # Resolve seed up-front so we can surface the actually-used value via
+    # response header. Empty/missing = generate a fresh int32; user-supplied
+    # = honored verbatim. This is the key affordance for the A/B iteration
+    # workflow (tweak prompt, keep seed) — without it the user can't pin
+    # the seed of a random run.
+    used_seed = random.randint(0, 2**31 - 1) if seed in (None, "") else int(seed)
+
     req = EditRequest(
         mode=mode,  # type: ignore[arg-type]
         prompt=prompt,
@@ -131,7 +139,7 @@ async def edit(
         mask=mask_img,
         steps=int(steps),
         guidance=float(guidance),
-        seed=int(seed) if seed not in (None, "") else None,
+        seed=used_seed,
     )
 
     job_progress.start(total=int(steps), mode=mode)
@@ -154,7 +162,11 @@ async def edit(
     if out.size != original_size:
         out = out.resize(original_size, Image.Resampling.LANCZOS)
 
-    return Response(content=image_to_png_bytes(out), media_type="image/png")
+    return Response(
+        content=image_to_png_bytes(out),
+        media_type="image/png",
+        headers={"X-Used-Seed": str(used_seed)},
+    )
 
 
 if __name__ == "__main__":

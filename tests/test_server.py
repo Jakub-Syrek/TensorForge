@@ -183,6 +183,34 @@ def test_abort_when_active_returns_200_and_sets_flag(client):
         srv.job_progress.finish()
 
 
+def test_edit_returns_used_seed_header_when_caller_supplies_seed(client, stub_editor):
+    r = client.post(
+        "/api/edit",
+        data={"mode": "kontext", "prompt": "x", "steps": "1", "seed": "12345"},
+        files={"image": ("in.png", _png_bytes(), "image/png")},
+    )
+    assert r.status_code == 200
+    assert r.headers.get("X-Used-Seed") == "12345"
+    assert stub_editor.last_request.seed == 12345
+
+
+def test_edit_generates_seed_when_caller_omits(client, stub_editor):
+    """No seed in form → server picks one and surfaces it in the header so
+    the client can pin it for the next run (A/B iteration workflow)."""
+    r = client.post(
+        "/api/edit",
+        data={"mode": "kontext", "prompt": "x", "steps": "1"},
+        files={"image": ("in.png", _png_bytes(), "image/png")},
+    )
+    assert r.status_code == 200
+    used = r.headers.get("X-Used-Seed")
+    assert used is not None
+    seed_int = int(used)
+    assert 0 <= seed_int < 2**31
+    # Same value made it into the EditRequest, not None.
+    assert stub_editor.last_request.seed == seed_int
+
+
 def test_edit_marks_progress_finished_after_success(client, stub_editor):
     from backend import server as srv
 

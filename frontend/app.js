@@ -134,13 +134,22 @@ async function runEdit() {
       }
       throw new Error((await r.text()) || r.statusText);
     }
+    const usedSeed = r.headers.get("X-Used-Seed");
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
     $("result").src = url;
     state.lastResultBlob = blob;
     $("download").href = url;
     $("resultActions").classList.remove("hidden");
-    setStatus("done", "ok");
+    if (usedSeed) {
+      // Pin the seed used by this run so the next click reuses it —
+      // gives free A/B testing at fixed seed when iterating on prompt.
+      // User can clear the field to randomize again.
+      $("seed").value = usedSeed;
+      setStatus(`done · seed ${usedSeed}`, "ok");
+    } else {
+      setStatus("done", "ok");
+    }
   } catch (e) {
     if (state.userAborted) {
       setStatus("aborted", "err");
