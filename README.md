@@ -18,6 +18,26 @@ Web app for prompt-driven image editing with FLUX, sized for an RTX 5080
 For prompt patterns, mode selection guide, and iteration workflow, see
 **[README.tech.md](README.tech.md)**.
 
+## Screenshots
+
+<!--
+  Drop screenshots into docs/screenshots/ then uncomment the references
+  below. See docs/screenshots/README.md for naming + size conventions.
+-->
+
+<!--
+![UI overview](docs/screenshots/ui-overview.png)
+
+| before | after |
+|---|---|
+| ![](docs/screenshots/before-hairdryer.jpg) | ![](docs/screenshots/after-hairdryer.jpg) |
+
+![Progress + GPU panel during NF4 inference](docs/screenshots/ui-progress-gpu.png)
+
+![Edit history strip](docs/screenshots/ui-history.png)
+-->
+
+
 ## Setup
 
 The 5080 needs PyTorch nightly **cu128** — stable PyTorch ships kernels only
