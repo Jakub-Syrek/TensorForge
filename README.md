@@ -57,6 +57,29 @@ Tests run torch-free (a stub is installed in `tests/conftest.py`), so
 `pytest -q` works without the multi-gigabyte GPU stack — useful when iterating
 on routing or pure helpers.
 
+## 4-bit quantization (recommended on 16 GB cards)
+
+Without quantization, Flux Kontext + T5-XXL is ~21 GB in bf16, doesn't fit
+in a 5080's 16 GB VRAM, and `enable_model_cpu_offload` streams the model
+across PCIe every step — observed ~230 s/step at 512 px input. The GPU
+sits at ~65 W (vs 360 W TDP) waiting for transfers.
+
+NF4 (bitsandbytes) drops the transformer to ~3.5 GB and T5 to ~3 GB. The
+whole pipeline fits in VRAM, cpu_offload is disabled, and the card actually
+computes. Expected speedup: ~10×, modest quality loss limited to fine
+textures, smooth gradients, and image text — for typical Kontext edits
+(replace/remove/restyle) the difference isn't visible.
+
+Enable per-run:
+
+```powershell
+$env:FLUX_QUANT = "4bit"
+python backend\server.py
+```
+
+`GET /api/health` shows `"quant": "4bit"` when active. Unset the env var
+to revert to the bf16 baseline.
+
 ## Notes
 
 - `enable_model_cpu_offload()` plus VAE slicing/tiling are required, not

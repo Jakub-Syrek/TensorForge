@@ -19,6 +19,14 @@ from backend.progress import job_progress
 KONTEXT_MODEL = "black-forest-labs/FLUX.1-Kontext-dev"
 FILL_MODEL = "black-forest-labs/FLUX.1-Fill-dev"
 
+# Set FLUX_QUANT=4bit to load the transformer and T5 text encoder in NF4
+# (bitsandbytes). Whole pipeline drops from ~21 GB to ~10 GB, fits in 16 GB
+# without cpu_offload — eliminates PCIe streaming, GPU actually computes
+# instead of waiting on host RAM. NF4 is community-standard for Flux; visible
+# quality loss is limited to fine textures / smooth gradients / image text.
+QUANT_MODE = os.environ.get("FLUX_QUANT", "").strip().lower()
+QUANTIZED = QUANT_MODE == "4bit"
+
 Mode = Literal["kontext", "inpaint"]
 
 
@@ -72,7 +80,7 @@ class FluxEditor:
     def _load_kontext(self):
         from diffusers import FluxKontextPipeline
 
-        pipe = FluxKontextPipeline.from_pretrained(KONTEXT_MODEL, torch_dtype=self._dtype)
+        pipe = self._from_pretrained(FluxKontextPipeline, KONTEXT_MODEL)
         self._apply_accel(pipe)
         self._apply_memory_savers(pipe)
         return pipe
@@ -80,10 +88,58 @@ class FluxEditor:
     def _load_fill(self):
         from diffusers import FluxFillPipeline
 
-        pipe = FluxFillPipeline.from_pretrained(FILL_MODEL, torch_dtype=self._dtype)
+        pipe = self._from_pretrained(FluxFillPipeline, FILL_MODEL)
         self._apply_accel(pipe)
         self._apply_memory_savers(pipe)
         return pipe
+
+    def _from_pretrained(self, pipeline_cls, repo_id):
+        """Load `repo_id` either in bf16 (default) or NF4 4-bit (FLUX_QUANT=4bit).
+
+        When quantized, the transformer and T5 text encoder are constructed
+        separately with BitsAndBytesConfig and injected into the pipeline —
+        diffusers needs the components built before pipeline assembly because
+        from_pretrained doesn't accept a per-component quant config.
+        """
+        if not QUANTIZED:
+            return pipeline_cls.from_pretrained(repo_id, torch_dtype=self._dtype)
+
+        # Lazy imports — these pull bitsandbytes only when the user opts in.
+        from diffusers import BitsAndBytesConfig as DiffusersBnbConfig
+        from diffusers import FluxTransformer2DModel
+        from transformers import BitsAndBytesConfig as TransformersBnbConfig
+        from transformers import T5EncoderModel
+
+        nf4_diffusers = DiffusersBnbConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=self._dtype,
+        )
+        nf4_transformers = TransformersBnbConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=self._dtype,
+        )
+
+        transformer = FluxTransformer2DModel.from_pretrained(
+            repo_id,
+            subfolder="transformer",
+            quantization_config=nf4_diffusers,
+            torch_dtype=self._dtype,
+        )
+        text_encoder_2 = T5EncoderModel.from_pretrained(
+            repo_id,
+            subfolder="text_encoder_2",
+            quantization_config=nf4_transformers,
+            torch_dtype=self._dtype,
+        )
+
+        return pipeline_cls.from_pretrained(
+            repo_id,
+            transformer=transformer,
+            text_encoder_2=text_encoder_2,
+            torch_dtype=self._dtype,
+        )
 
     def _apply_accel(self, pipe) -> None:
         """Load and fuse the acceleration LoRA, if configured.
@@ -101,8 +157,13 @@ class FluxEditor:
 
     def _apply_memory_savers(self, pipe) -> None:
         if torch.cuda.is_available():
-            # Required on 16 GB: keeps non-active submodules on CPU.
-            pipe.enable_model_cpu_offload()
+            if QUANTIZED:
+                # NF4 brings the whole pipeline under VRAM; offload would
+                # only add PCIe round-trips for no gain.
+                pipe.to("cuda")
+            else:
+                # bf16 + 16 GB doesn't fit — stream components in/out.
+                pipe.enable_model_cpu_offload()
         pipe.vae.enable_slicing()
         pipe.vae.enable_tiling()
 

@@ -14,3 +14,9 @@ Pillow>=10.4.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.12
+
+# Optional 4-bit quantization (enabled via FLUX_QUANT=4bit env var).
+# Drops Flux Kontext/Fill transformer from ~12 GB to ~3.5 GB and T5-XXL
+# from ~9 GB to ~3 GB so the whole pipeline fits in 16 GB VRAM without
+# cpu_offload — eliminates PCIe thrashing on RTX 5080/16 GB.
+bitsandbytes>=0.49.0
