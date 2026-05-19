@@ -36,7 +36,9 @@ def _read_quant_mode() -> str | None:
 
 QUANT_MODE: str | None = _read_quant_mode()
 
-Mode = Literal["kontext", "inpaint"]
+Mode = Literal["kontext", "inpaint", "qwen"]
+
+QWEN_EDIT_MODEL = "Qwen/Qwen-Image-Edit"
 
 
 class EditAborted(RuntimeError):
@@ -92,6 +94,7 @@ class FluxEditor:
     def __init__(self, accel: AccelConfig | None = None) -> None:
         self._kontext = None
         self._fill = None
+        self._qwen = None
         self._dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
         self.accel = accel if accel is not None else AccelConfig.from_env()
 
@@ -109,6 +112,28 @@ class FluxEditor:
         pipe = self._from_pretrained(FluxFillPipeline, FILL_MODEL)
         self._apply_accel(pipe)
         self._apply_memory_savers(pipe)
+        return pipe
+
+    def _load_qwen(self):  # pragma: no cover — requires GPU + ~20 GB model
+        """Load Qwen-Image-Edit as an alternative instructive-edit backend.
+
+        Different architecture than Flux: Qwen2-VL text encoder + DiT
+        transformer. Our Flux-specific NF4 path (`_from_pretrained` with
+        T5EncoderModel + FluxTransformer2DModel) doesn't apply — Qwen
+        runs as bf16 with cpu_offload. Hyper-SD LoRA also doesn't transfer
+        (Flux-trained, different attention shapes), so no _apply_accel here.
+        """
+        from diffusers import QwenImageEditPipeline
+
+        pipe = QwenImageEditPipeline.from_pretrained(  # nosec B615 - upstream Qwen team trusted
+            QWEN_EDIT_MODEL,
+            torch_dtype=self._dtype,
+        )
+        if torch.cuda.is_available():
+            pipe.enable_model_cpu_offload()
+        if hasattr(pipe, "vae") and hasattr(pipe.vae, "enable_slicing"):
+            pipe.vae.enable_slicing()
+            pipe.vae.enable_tiling()
         return pipe
 
     def _from_pretrained(self, pipeline_cls, repo_id):  # pragma: no cover — GPU
@@ -211,6 +236,12 @@ class FluxEditor:
             self._fill = self._load_fill()
         return self._fill
 
+    @property
+    def qwen(self):  # pragma: no cover — triggers _load_qwen (GPU)
+        if self._qwen is None:
+            self._qwen = self._load_qwen()
+        return self._qwen
+
     def _release_intermediate_memory(self) -> None:  # pragma: no cover — GPU only
         """Drop intermediate activation buffers held after the call returns.
 
@@ -241,10 +272,8 @@ class FluxEditor:
             return callback_kwargs
 
         try:
-            pipe = self.kontext if req.mode == "kontext" else self.fill
-            self._set_accel_active(pipe, req.use_accel)
-
             if req.mode == "kontext":
+                self._set_accel_active(self.kontext, req.use_accel)
                 result = self.kontext(
                     prompt=req.prompt,
                     image=image,
@@ -259,12 +288,27 @@ class FluxEditor:
                 if req.mask is None:
                     raise ValueError("inpaint mode requires a mask image")
                 mask = ensure_l(req.mask).resize(image.size)
+                self._set_accel_active(self.fill, req.use_accel)
                 result = self.fill(
                     prompt=req.prompt,
                     image=image,
                     mask_image=mask,
                     num_inference_steps=req.steps,
                     guidance_scale=req.guidance,
+                    generator=generator,
+                    callback_on_step_end=_on_step_end,
+                )
+                return result.images[0]
+
+            if req.mode == "qwen":
+                # Qwen uses true_cfg_scale (default 4.0), not guidance_scale.
+                # Map req.guidance -> true_cfg_scale; req.steps -> num_inference_steps.
+                # No accel LoRA — Hyper-SD is Flux-architecture specific.
+                result = self.qwen(
+                    prompt=req.prompt,
+                    image=image,
+                    num_inference_steps=req.steps,
+                    true_cfg_scale=req.guidance,
                     generator=generator,
                     callback_on_step_end=_on_step_end,
                 )

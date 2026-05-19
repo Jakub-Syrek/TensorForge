@@ -71,13 +71,27 @@ $("accelToggle").addEventListener("change", (e) => {
 });
 
 // --- mode toggle ---------------------------------------------------------
+// Per-mode sensible defaults. User can override afterwards via the inputs.
+const MODE_DEFAULTS = {
+  kontext: { steps: 28, guidance: 3.5 },
+  inpaint: { steps: 28, guidance: 3.5 },
+  qwen:    { steps: 50, guidance: 4.0 }, // Qwen-Image-Edit native defaults
+};
+
 document.querySelectorAll(".seg-btn").forEach(btn => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".seg-btn").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
+    const previousMode = state.mode;
     state.mode = btn.dataset.mode;
     $("brushRow").classList.toggle("hidden", state.mode !== "inpaint");
     maskCanvas.style.pointerEvents = state.mode === "inpaint" ? "auto" : "none";
+    // Auto-adjust params only when switching to a mode with materially
+    // different defaults (Qwen needs ~50 steps; Flux modes need ~28).
+    if (state.mode !== previousMode && MODE_DEFAULTS[state.mode]) {
+      $("steps").value = MODE_DEFAULTS[state.mode].steps;
+      $("guidance").value = MODE_DEFAULTS[state.mode].guidance;
+    }
   });
 });
 maskCanvas.style.pointerEvents = "none";

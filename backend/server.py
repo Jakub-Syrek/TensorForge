@@ -108,8 +108,8 @@ async def edit(
     seed: int | None = Form(None),
     use_accel: bool = Form(True),
 ) -> Response:
-    if mode not in {"kontext", "inpaint"}:
-        raise HTTPException(400, f"mode must be 'kontext' or 'inpaint', got {mode!r}")
+    if mode not in {"kontext", "inpaint", "qwen"}:
+        raise HTTPException(400, f"mode must be 'kontext', 'inpaint', or 'qwen', got {mode!r}")
     if not prompt.strip():
         raise HTTPException(400, "prompt is empty")
 

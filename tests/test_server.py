@@ -112,6 +112,21 @@ def test_edit_rejects_unknown_mode(client, stub_editor):
     assert r.status_code == 400
 
 
+def test_edit_qwen_mode_accepted(client, stub_editor):
+    """Qwen-Image-Edit dispatches through the same endpoint as Kontext —
+    only the mode flag differs. The stub editor returns a green PNG; that's
+    enough to confirm the route + validation pass."""
+    r = client.post(
+        "/api/edit",
+        data={"mode": "qwen", "prompt": "x", "steps": "50", "guidance": "4.0"},
+        files={"image": ("in.png", _png_bytes(), "image/png")},
+    )
+    assert r.status_code == 200, r.text
+    assert stub_editor.last_request.mode == "qwen"
+    assert stub_editor.last_request.steps == 50
+    assert stub_editor.last_request.guidance == 4.0
+
+
 def test_edit_round_trips_to_original_size(client, stub_editor):
     """Server downscales input to MAX_EDGE for inference, then restores
     the original canvas before returning. The stub editor echoes whatever
