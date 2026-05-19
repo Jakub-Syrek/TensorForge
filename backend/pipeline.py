@@ -6,6 +6,7 @@ plus VAE slicing/tiling are required — they're not optional polish.
 
 from __future__ import annotations
 
+import gc
 import os
 from dataclasses import dataclass
 from typing import Literal
@@ -193,6 +194,17 @@ class FluxEditor:
             self._fill = self._load_fill()
         return self._fill
 
+    def _release_intermediate_memory(self) -> None:  # pragma: no cover — GPU only
+        """Drop intermediate activation buffers held after the call returns.
+
+        Diffusers leaves attention KV cache + workspace tensors allocated in
+        CUDA's caching allocator between calls. Without this, repeated edits
+        slowly grow resident VRAM until OOM under prolonged use."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
     def edit(self, req: EditRequest) -> Image.Image:  # pragma: no cover — GPU inference
         generator = None
         if req.seed is not None:
@@ -211,30 +223,33 @@ class FluxEditor:
             job_progress.advance(step)
             return callback_kwargs
 
-        if req.mode == "kontext":
-            result = self.kontext(
-                prompt=req.prompt,
-                image=image,
-                num_inference_steps=req.steps,
-                guidance_scale=req.guidance,
-                generator=generator,
-                callback_on_step_end=_on_step_end,
-            )
-            return result.images[0]
+        try:
+            if req.mode == "kontext":
+                result = self.kontext(
+                    prompt=req.prompt,
+                    image=image,
+                    num_inference_steps=req.steps,
+                    guidance_scale=req.guidance,
+                    generator=generator,
+                    callback_on_step_end=_on_step_end,
+                )
+                return result.images[0]
 
-        if req.mode == "inpaint":
-            if req.mask is None:
-                raise ValueError("inpaint mode requires a mask image")
-            mask = ensure_l(req.mask).resize(image.size)
-            result = self.fill(
-                prompt=req.prompt,
-                image=image,
-                mask_image=mask,
-                num_inference_steps=req.steps,
-                guidance_scale=req.guidance,
-                generator=generator,
-                callback_on_step_end=_on_step_end,
-            )
-            return result.images[0]
+            if req.mode == "inpaint":
+                if req.mask is None:
+                    raise ValueError("inpaint mode requires a mask image")
+                mask = ensure_l(req.mask).resize(image.size)
+                result = self.fill(
+                    prompt=req.prompt,
+                    image=image,
+                    mask_image=mask,
+                    num_inference_steps=req.steps,
+                    guidance_scale=req.guidance,
+                    generator=generator,
+                    callback_on_step_end=_on_step_end,
+                )
+                return result.images[0]
 
-        raise ValueError(f"unknown mode: {req.mode}")
+            raise ValueError(f"unknown mode: {req.mode}")
+        finally:
+            self._release_intermediate_memory()

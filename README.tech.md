@@ -123,6 +123,48 @@ describe the object that goes inside the mask.
 | `guidance` | 2.5–4.0 | lower = more creative, higher = more literal; above 5 burns detail |
 | `seed` | any int | **the key knob for iteration** — same seed + new prompt = comparable A/B |
 
+## Disk hygiene
+
+The setup leaks disk in two places: Hugging Face cache (Flux Kontext + Fill
+are ~24 GB each, persistent) and torch/triton kernel caches. VRAM also drifts
+upward after many sequential edits if you don't release intermediates between
+calls — the server already does this automatically via
+`torch.cuda.empty_cache() + gc.collect()` in `pipeline._release_intermediate_memory()`,
+called from the `finally` block of every edit.
+
+The `scripts/clean.py` helper reports + cleans selectively:
+
+```powershell
+# Dry-run report — what's eating disk
+python scripts\clean.py
+
+# Drop __pycache__ across the repo
+python scripts\clean.py --apply --pyc
+
+# Drop one HF model (frees ~24 GB)
+python scripts\clean.py --apply --hf black-forest-labs/FLUX.1-Kontext-dev
+
+# Drop torch.compile + triton caches
+python scripts\clean.py --apply --torch-compile
+
+# Drop the local outputs/ folder
+python scripts\clean.py --apply --outputs
+```
+
+Typical disk costs to be aware of:
+
+| location | size | how often to clean |
+|---|---|---|
+| `~/.cache/huggingface` Flux Kontext | ~33 GB | only if you stop using global edit |
+| `~/.cache/huggingface` Flux Fill | ~33 GB | only if you stop using inpaint |
+| `~/.cache/torch_inductor` | ~hundreds of MB | safe to drop, rebuilds on demand |
+| `~/.triton` | ~hundreds of MB | safe to drop, rebuilds on demand |
+| `<repo>/__pycache__/` | <1 MB total | cosmetic, drop anytime |
+
+If you're switching between bf16 and NF4 a lot, the torch compile cache can
+grow because each config has separate compiled kernels. `--torch-compile`
+drops everything and the next run rebuilds.
+
 ## Iteration workflow that saves time
 
 1. **Exploration pass.** 20 steps, guidance 3.5, seed `random` →
