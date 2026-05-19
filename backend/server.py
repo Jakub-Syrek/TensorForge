@@ -9,6 +9,7 @@ Endpoints:
 from __future__ import annotations
 
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -23,8 +24,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.imgutils import image_to_png_bytes
+from backend.imgutils import fit_long_edge, image_to_png_bytes
 from backend.pipeline import EditRequest, FluxEditor
+
+# Cap on the longest edge of the input image. 1024 is the Flux Kontext sweet
+# spot on a 16 GB card with cpu_offload — bigger doesn't add detail
+# proportional to the VRAM/PCIe cost. Override with FLUX_MAX_EDGE.
+MAX_EDGE = int(os.environ.get("FLUX_MAX_EDGE", "1024"))
 
 app = FastAPI(title="AiPictureModifier")
 editor = FluxEditor()
@@ -72,10 +78,16 @@ async def edit(
         raise HTTPException(400, "prompt is empty")
 
     img = Image.open(io.BytesIO(await image.read()))
+    original_size = img.size
+    img = fit_long_edge(img, MAX_EDGE)
+    if img.size != original_size:
+        print(f"resized input {original_size} -> {img.size} (FLUX_MAX_EDGE={MAX_EDGE})")
+
     mask_img: Image.Image | None = None
     if mode == "inpaint":
         if mask is None:
             raise HTTPException(400, "inpaint requires a mask")
+        # Mask is resized to match the image inside the pipeline; no resize here.
         mask_img = Image.open(io.BytesIO(await mask.read()))
 
     req = EditRequest(

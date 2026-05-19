@@ -27,8 +27,11 @@ You'll also need a Hugging Face token with access granted to
 and [`FLUX.1-Fill-dev`](https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev):
 
 ```powershell
-huggingface-cli login
+hf auth login
 ```
+
+(Older docs say `huggingface-cli login` — that command is deprecated in
+`huggingface_hub` ≥ 1.0; use `hf` instead.)
 
 ## Run
 

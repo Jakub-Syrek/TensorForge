@@ -2,7 +2,7 @@ from io import BytesIO
 
 from PIL import Image
 
-from backend.imgutils import ensure_l, ensure_rgb, image_to_png_bytes
+from backend.imgutils import ensure_l, ensure_rgb, fit_long_edge, image_to_png_bytes
 
 
 def test_ensure_rgb_passthrough():
@@ -26,6 +26,39 @@ def test_ensure_l_converts_rgb():
     img = Image.new("RGB", (4, 4), color=(255, 255, 255))
     out = ensure_l(img)
     assert out.mode == "L"
+
+
+def test_fit_long_edge_passthrough_when_already_small():
+    img = Image.new("RGB", (512, 384), color=(0, 0, 0))
+    out = fit_long_edge(img, max_edge=1024)
+    assert out is img
+
+
+def test_fit_long_edge_downscales_to_cap_keeping_aspect():
+    img = Image.new("RGB", (4000, 3000), color=(0, 0, 0))
+    out = fit_long_edge(img, max_edge=1024)
+    w, h = out.size
+    assert max(w, h) <= 1024
+    assert w % 16 == 0 and h % 16 == 0
+    # 4000:3000 = 4:3 → 1024:768 rounded to /16 → 1024:768
+    assert (w, h) == (1024, 768)
+
+
+def test_fit_long_edge_portrait_orientation():
+    img = Image.new("RGB", (3000, 4000), color=(0, 0, 0))
+    out = fit_long_edge(img, max_edge=1024)
+    w, h = out.size
+    assert max(w, h) <= 1024
+    assert w % 16 == 0 and h % 16 == 0
+    assert (w, h) == (768, 1024)
+
+
+def test_fit_long_edge_rounds_to_multiple_of_16():
+    img = Image.new("RGB", (1500, 1500), color=(0, 0, 0))
+    out = fit_long_edge(img, max_edge=1000)
+    w, h = out.size
+    assert w % 16 == 0 and h % 16 == 0
+    assert max(w, h) <= 1000  # never exceed the cap
 
 
 def test_image_to_png_bytes_roundtrip():
