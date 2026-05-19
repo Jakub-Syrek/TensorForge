@@ -23,7 +23,9 @@ fetch("/api/health").then(r => r.json()).then(h => {
 // --- file input + drop ---------------------------------------------------
 const dz = $("dropzone");
 const file = $("file");
-dz.addEventListener("click", () => file.click());
+// NB: dropzone is a <label> wrapping the hidden file input, so the click
+// reaches the input natively. Don't add a JS click handler that calls
+// file.click() — it doubles the dialog (user has to pick the file twice).
 file.addEventListener("change", (e) => loadFile(e.target.files[0]));
 ["dragenter", "dragover"].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("drag"); }));
 ["dragleave", "drop"].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("drag"); }));
