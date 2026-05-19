@@ -15,6 +15,9 @@ Web app for prompt-driven image editing with FLUX, sized for an RTX 5080
 - **Global edit** — FLUX.1 Kontext: keeps composition, follows instructions.
 - **Inpaint** — FLUX.1 Fill: regenerates a painted mask region only.
 
+For prompt patterns, mode selection guide, and iteration workflow, see
+**[README.tech.md](README.tech.md)**.
+
 ## Setup
 
 The 5080 needs PyTorch nightly **cu128** — stable PyTorch ships kernels only
