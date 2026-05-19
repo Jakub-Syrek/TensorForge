@@ -94,6 +94,39 @@ def test_parse_nvsmi_line_returns_none_on_garbage():
     assert parse_nvsmi_line("name, not-an-int, 1, 2") is None
 
 
+def test_request_abort_on_active_job_returns_true_and_sets_flag():
+    j = JobProgress()
+    j.start(total=28, mode="kontext")
+    assert j.aborted is False
+    assert j.request_abort() is True
+    assert j.aborted is True
+
+
+def test_request_abort_on_idle_job_returns_false_and_no_op():
+    j = JobProgress()
+    assert j.request_abort() is False
+    assert j.aborted is False
+
+
+def test_start_resets_aborted_flag():
+    j = JobProgress()
+    j.start(total=10, mode="kontext")
+    j.request_abort()
+    assert j.aborted is True
+    j.start(total=10, mode="inpaint")  # new job
+    assert j.aborted is False
+
+
+def test_snapshot_includes_aborted_field():
+    j = JobProgress()
+    j.start(total=10, mode="kontext")
+    snap = j.snapshot()
+    assert "aborted" in snap
+    assert snap["aborted"] is False
+    j.request_abort()
+    assert j.snapshot()["aborted"] is True
+
+
 def test_gpu_stats_to_dict_computes_vram_percent():
     from backend.progress import GpuStats
 

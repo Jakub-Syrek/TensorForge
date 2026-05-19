@@ -43,8 +43,12 @@
         <label>seed <input id="seed" type="number" placeholder="random" /></label>
       </div>
 
-      <div class="row">
+      <div class="row run-row">
         <button id="run" class="run">edit image</button>
+        <button id="abort" class="abort hidden" type="button">abort</button>
+        <button id="refresh" class="secondary" type="button" title="clear image, mask, prompt and result">reset</button>
+      </div>
+      <div class="row">
         <span id="status" class="muted"></span>
       </div>
 

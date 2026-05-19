@@ -24,6 +24,7 @@ class JobProgress:
     started_at: float | None = None
     finished_at: float | None = None
     last_error: str | None = None
+    aborted: bool = False
 
     def start(self, total: int, mode: str) -> None:
         self.active = True
@@ -33,11 +34,20 @@ class JobProgress:
         self.started_at = time.monotonic()
         self.finished_at = None
         self.last_error = None
+        self.aborted = False
 
     def advance(self, step_index_zero_based: int) -> None:
         # diffusers passes 0-based step index after each step ends, so step 0
         # firing means "first step done" -> show 1/total.
         self.step = step_index_zero_based + 1
+
+    def request_abort(self) -> bool:
+        """Signal abort to the running job. Returns True if an active job
+        was signalled, False if there was nothing to abort."""
+        if not self.active:
+            return False
+        self.aborted = True
+        return True
 
     def finish(self, error: str | None = None) -> None:
         self.active = False
@@ -60,6 +70,7 @@ class JobProgress:
             "elapsed_s": elapsed,
             "percent": round(pct, 1),
             "error": self.last_error,
+            "aborted": self.aborted,
         }
 
 

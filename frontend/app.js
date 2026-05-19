@@ -117,12 +117,21 @@ async function runEdit() {
   if (state.mode === "inpaint") fd.append("mask", await maskBlob(), "mask.png");
 
   $("run").disabled = true;
+  $("abort").classList.remove("hidden");
+  state.userAborted = false;
   setStatus("running…", "");
   // Switch the idle poller to the active (faster) cadence for this job.
   startProgressPoll(500);
   try {
     const r = await fetch("/api/edit", { method: "POST", body: fd });
-    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    if (!r.ok) {
+      // 499 (NGINX): client closed request — we sent abort, expected case.
+      if (r.status === 499 || state.userAborted) {
+        setStatus("aborted", "err");
+        return;
+      }
+      throw new Error((await r.text()) || r.statusText);
+    }
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
     $("result").src = url;
@@ -131,14 +140,60 @@ async function runEdit() {
     dl.classList.remove("hidden");
     setStatus("done", "ok");
   } catch (e) {
-    setStatus(String(e.message || e), "err");
+    if (state.userAborted) {
+      setStatus("aborted", "err");
+    } else {
+      setStatus(String(e.message || e), "err");
+    }
   } finally {
     $("run").disabled = false;
+    $("abort").classList.add("hidden");
     // Drop back to the slow idle cadence; don't stop completely so GPU
     // stats stay live while the user inspects the result.
     startProgressPoll(2000);
   }
 }
+
+// --- abort --------------------------------------------------------------
+$("abort").addEventListener("click", async () => {
+  $("abort").disabled = true;
+  setStatus("aborting…", "");
+  state.userAborted = true;
+  try {
+    const r = await fetch("/api/abort", { method: "POST" });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok && r.status !== 409) {
+      setStatus(`abort failed: ${r.status}`, "err");
+    }
+    // 200: aborted at step boundary. 409: nothing to abort (race — job
+    // already finished). Either way, runEdit's response handler will
+    // reflect the final state.
+    void body;
+  } finally {
+    $("abort").disabled = false;
+  }
+});
+
+// --- refresh / reset ----------------------------------------------------
+$("refresh").addEventListener("click", () => {
+  // Clear image, mask, prompt, result, status — back to a clean slate
+  // without reloading the page (so GPU panel stays live).
+  state.image = null;
+  state.imageFile = null;
+  state.maskDirty = false;
+  state.userAborted = false;
+  $("file").value = "";
+  $("dropHint").textContent = "drop image · or click to choose";
+  $("prompt").value = "";
+  $("seed").value = "";
+  imgCtx.clearRect(0, 0, imgCanvas.width, imgCanvas.height);
+  maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  imgCanvas.width = maskCanvas.width = 0;
+  imgCanvas.height = maskCanvas.height = 0;
+  $("result").removeAttribute("src");
+  $("download").classList.add("hidden");
+  setStatus("", "");
+});
 
 // --- progress polling ---------------------------------------------------
 let progTimer = null;

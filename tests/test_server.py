@@ -158,6 +158,31 @@ def test_progress_endpoint_returns_idle_shape(client):
     assert "gpu" in body
 
 
+def test_abort_when_idle_returns_409(client):
+    from backend import server as srv
+
+    srv.job_progress.active = False
+    r = client.post("/api/abort")
+    assert r.status_code == 409
+    body = r.json()
+    assert body["aborted"] is False
+    assert body["active"] is False
+
+
+def test_abort_when_active_returns_200_and_sets_flag(client):
+    from backend import server as srv
+
+    srv.job_progress.start(total=28, mode="kontext")
+    try:
+        r = client.post("/api/abort")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["aborted"] is True
+        assert srv.job_progress.aborted is True
+    finally:
+        srv.job_progress.finish()
+
+
 def test_edit_marks_progress_finished_after_success(client, stub_editor):
     from backend import server as srv
 

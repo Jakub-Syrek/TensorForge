@@ -38,6 +38,11 @@ QUANT_MODE: str | None = _read_quant_mode()
 Mode = Literal["kontext", "inpaint"]
 
 
+class EditAborted(RuntimeError):
+    """Raised from the diffusers step callback when job_progress.aborted is set.
+    Distinct exception type so the server can return a dedicated status code."""
+
+
 @dataclass(frozen=True)
 class AccelConfig:
     """Optional acceleration LoRA (e.g. Hyper-SD, Flux-Turbo) to drop step count.
@@ -198,7 +203,11 @@ class FluxEditor:
 
         # diffusers calls this after each denoising step. We update the
         # shared progress state so /api/progress can report N/total live.
+        # Raising here is the only point where we can interrupt the loop —
+        # diffusers does not expose mid-step cancellation.
         def _on_step_end(pipe, step, timestep, callback_kwargs):
+            if job_progress.aborted:
+                raise EditAborted(f"aborted by user at step {step + 1}/{req.steps}")
             job_progress.advance(step)
             return callback_kwargs
 

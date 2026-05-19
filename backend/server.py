@@ -26,7 +26,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.imgutils import fit_long_edge, image_to_png_bytes
-from backend.pipeline import QUANT_MODE, EditRequest, FluxEditor
+from backend.pipeline import QUANT_MODE, EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress, query_gpu_stats
 
 # Cap on the longest edge of the input image. 512 is the conservative
@@ -79,6 +79,21 @@ def progress() -> JSONResponse:
     )
 
 
+@app.post("/api/abort")
+def abort() -> JSONResponse:
+    """Signal the running edit (if any) to abort at the next step boundary.
+
+    diffusers can only be interrupted between denoising steps, so abort is
+    near-instant during inference (≤ 1 step latency) and a no-op during
+    pre-loop phases (text encoding, model loading)."""
+    requested = job_progress.request_abort()
+    status = 200 if requested else 409
+    return JSONResponse(
+        {"aborted": requested, "active": job_progress.active},
+        status_code=status,
+    )
+
+
 @app.post("/api/edit")
 async def edit(
     image: UploadFile = File(...),
@@ -120,8 +135,12 @@ async def edit(
     job_progress.start(total=int(steps), mode=mode)
     try:
         # Offload the blocking inference to a worker thread so the FastAPI
-        # event loop stays free to serve /api/progress concurrently.
+        # event loop stays free to serve /api/progress + /api/abort concurrently.
         out = await asyncio.to_thread(editor.edit, req)
+    except EditAborted as exc:
+        # User-initiated abort — 499 (NGINX convention: Client Closed Request).
+        job_progress.finish(error=str(exc))
+        raise HTTPException(499, f"edit aborted: {exc}") from exc
     except Exception as exc:  # surface failures to the UI rather than 500-spinner
         job_progress.finish(error=str(exc))
         raise HTTPException(500, f"edit failed: {exc}") from exc
