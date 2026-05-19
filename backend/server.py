@@ -26,7 +26,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.imgutils import fit_long_edge, image_to_png_bytes
-from backend.pipeline import QUANT_MODE, QUANTIZED, EditRequest, FluxEditor
+from backend.pipeline import QUANT_MODE, EditRequest, FluxEditor
 from backend.progress import job_progress, query_gpu_stats
 
 # Cap on the longest edge of the input image. 512 is the conservative
@@ -62,7 +62,7 @@ def health() -> JSONResponse:
             if accel is not None
             else None
         ),
-        "quant": QUANT_MODE if QUANTIZED else None,
+        "quant": QUANT_MODE,
         "max_edge": MAX_EDGE,
     }
     return JSONResponse(payload)

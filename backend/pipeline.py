@@ -13,7 +13,7 @@ from typing import Literal
 import torch
 from PIL import Image
 
-from backend.imgutils import ensure_l, ensure_rgb, image_to_png_bytes  # noqa: F401  (re-export)
+from backend.imgutils import ensure_l, ensure_rgb
 from backend.progress import job_progress
 
 KONTEXT_MODEL = "black-forest-labs/FLUX.1-Kontext-dev"
@@ -24,8 +24,16 @@ FILL_MODEL = "black-forest-labs/FLUX.1-Fill-dev"
 # without cpu_offload — eliminates PCIe streaming, GPU actually computes
 # instead of waiting on host RAM. NF4 is community-standard for Flux; visible
 # quality loss is limited to fine textures / smooth gradients / image text.
-QUANT_MODE = os.environ.get("FLUX_QUANT", "").strip().lower()
-QUANTIZED = QUANT_MODE == "4bit"
+_VALID_QUANT_MODES = frozenset({"4bit"})
+
+
+def _read_quant_mode() -> str | None:
+    """Read FLUX_QUANT env var; return canonical mode string or None if disabled."""
+    raw = os.environ.get("FLUX_QUANT", "").strip().lower()
+    return raw if raw in _VALID_QUANT_MODES else None
+
+
+QUANT_MODE: str | None = _read_quant_mode()
 
 Mode = Literal["kontext", "inpaint"]
 
@@ -101,7 +109,7 @@ class FluxEditor:
         diffusers needs the components built before pipeline assembly because
         from_pretrained doesn't accept a per-component quant config.
         """
-        if not QUANTIZED:
+        if not QUANT_MODE:
             return pipeline_cls.from_pretrained(repo_id, torch_dtype=self._dtype)
 
         # Lazy imports — these pull bitsandbytes only when the user opts in.
@@ -157,7 +165,7 @@ class FluxEditor:
 
     def _apply_memory_savers(self, pipe) -> None:
         if torch.cuda.is_available():
-            if QUANTIZED:
+            if QUANT_MODE:
                 # NF4 brings the whole pipeline under VRAM; offload would
                 # only add PCIe round-trips for no gain.
                 pipe.to("cuda")
