@@ -20,46 +20,18 @@ For prompt patterns, mode selection guide, and iteration workflow, see
 
 ## Screenshots
 
-### UI overview
+<!--
+  Drop screenshots into images/ then uncomment the references below.
+  See images/README.md for naming + size conventions.
+-->
 
-![Full UI showing input, prompt, params, progress, GPU panel and result](images/ui-overview-remove-helmets.jpg)
+<!--
+![UI overview](images/ui-overview.jpg)
 
-Left panel: file dropzone, mode toggle, prompt, params (steps / guidance
-/ seed), action buttons, live progress bar, GPU telemetry pulled from
-`nvidia-smi` every 500 ms. Right panel: input canvas, result image, and
-the `use as input →` chain button.
+![Chain step 1](images/chain-1-remove-glasses.jpg)
 
-This run is also a useful illustration of where Kontext's text-only
-attention can struggle: the prompt `remove helmets so the faces will
-be visible` is partially executed — the model preserved the subjects
-but couldn't fully resolve the self-occlusion of the helmets without
-3D reasoning about the missing face geometry. Inpaint with a mask is
-the cleaner path for this class of edit (see `README.tech.md`).
-
-### Chained edits — `remove glasses` → `remove blue helmet`
-
-A real-world iteration loop: edit, click `use as input →`, write the
-next instruction. Each run takes ~80 s on an RTX 5080 with NF4
-(~2.8–3.2 s/step after warmup). The result of step 1 becomes the input
-for step 2 — no re-uploading.
-
-![Chain step 1: removing sunglasses](images/chain-1-remove-glasses.jpg)
-
-*Step 1 — `remove glasses`. Input is a photo of two people in rafting
-helmets; the woman is wearing sunglasses. Kontext removes them cleanly,
-preserves the rest of the composition. 28 steps, 89.3 s, 3.2 s/step.
-VRAM 11.9 / 15.9 GB resident, no PCIe thrashing.*
-
-![Chain step 2: removing the blue helmet, on the previous result](images/chain-2-remove-helmet.jpg)
-
-*Step 2 — clicked `use as input →` (input filename now reads
-`chained-1779222610013.png`), then `remove blue helmet`. The result of
-step 1 is now the input. Kontext replaces the helmet with plausible
-hair blended into the existing face. 28 steps, 77.8 s, 2.8 s/step.*
-
-The whole sequence (load photo → step 1 → chain → step 2 → result):
-under 3 minutes of wall time. The seed of each run is preserved in the
-seed field for further A/B iteration on the same composition.
+![Chain step 2](images/chain-2-remove-helmet.jpg)
+-->
 
 
 ## Setup
