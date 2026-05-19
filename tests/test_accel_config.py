@@ -2,6 +2,7 @@
 
 torch is stubbed in tests/conftest.py before any backend import.
 """
+
 from __future__ import annotations
 
 import pytest

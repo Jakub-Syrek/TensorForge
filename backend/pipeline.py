@@ -3,6 +3,7 @@
 Sized for a 16 GB Blackwell card. Flux in fp16 is ~24 GB, so model CPU offload
 plus VAE slicing/tiling are required — they're not optional polish.
 """
+
 from __future__ import annotations
 
 import os
@@ -32,6 +33,7 @@ class AccelConfig:
     quality at low step counts on those variants is not officially validated —
     verify visually before relying on it.
     """
+
     repo: str
     weight_name: str
     scale: float = 1.0

@@ -5,6 +5,7 @@ backend.server.editor with a stub that records the request and returns a
 canned PIL image. This catches regressions in routing, validation, and
 multipart handling without touching the GPU.
 """
+
 from __future__ import annotations
 
 from io import BytesIO

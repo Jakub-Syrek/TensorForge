@@ -5,6 +5,7 @@ Endpoints:
   GET  /api/health    -> reports GPU + sm version
   POST /api/edit      -> multipart: image, mask?, mode, prompt, steps, guidance, seed
 """
+
 from __future__ import annotations
 
 import io
@@ -48,7 +49,8 @@ def health() -> JSONResponse:
         "capability": list(torch.cuda.get_device_capability(0)) if cuda else None,
         "accel": (
             {"repo": accel.repo, "weight": accel.weight_name, "scale": accel.scale}
-            if accel is not None else None
+            if accel is not None
+            else None
         ),
     }
     return JSONResponse(payload)

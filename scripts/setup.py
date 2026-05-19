@@ -8,6 +8,7 @@ ships up to sm_90; using it on a 5080 silently falls back to CPU or errors with
 Run once inside your venv:
     python scripts/setup.py
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -40,11 +41,20 @@ def detect_blackwell() -> bool:
 
 
 def install_torch_nightly() -> None:
-    run([
-        sys.executable, "-m", "pip", "install", "--upgrade",
-        "--pre", "torch", "torchvision",
-        "--index-url", TORCH_NIGHTLY_INDEX,
-    ])
+    run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--pre",
+            "torch",
+            "torchvision",
+            "--index-url",
+            TORCH_NIGHTLY_INDEX,
+        ]
+    )
 
 
 def install_torch_stable() -> None:

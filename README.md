@@ -39,6 +39,21 @@ python backend\server.py
 Open <http://127.0.0.1:8000>. First request downloads model weights (~24 GB
 each) into the HF cache.
 
+## Development
+
+Pre-commit hook mirrors the CI lint step (ruff check + ruff format + a few
+whitespace fixers) so the same gate that gates merges also gates commits.
+
+```powershell
+pip install pre-commit
+pre-commit install            # one-time, wires .git/hooks/pre-commit
+pre-commit run --all-files    # run on demand
+```
+
+Tests run torch-free (a stub is installed in `tests/conftest.py`), so
+`pytest -q` works without the multi-gigabyte GPU stack — useful when iterating
+on routing or pure helpers.
+
 ## Notes
 
 - `enable_model_cpu_offload()` plus VAE slicing/tiling are required, not

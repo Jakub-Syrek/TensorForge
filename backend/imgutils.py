@@ -1,4 +1,5 @@
 """Pure-Python image helpers. No torch — safe to import in CI without CUDA."""
+
 from __future__ import annotations
 
 import io

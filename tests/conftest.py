@@ -5,6 +5,7 @@ install torch (would add ~2 minutes for nothing useful in routing tests),
 so we install a minimal stub into sys.modules before any test module
 imports backend.*. The stub only carries the attributes our code touches.
 """
+
 from __future__ import annotations
 
 import sys
