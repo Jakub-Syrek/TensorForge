@@ -1,0 +1,25 @@
+[project]
+name = "aipicturemodifier"
+version = "0.1.0"
+description = "FLUX-based prompt-driven image editor (Kontext + Fill) for RTX 5080."
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["models", "outputs", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+  "E501",  # line length handled by formatter; long URLs in comments are fine
+  "B008",  # FastAPI requires File(...)/Form(...) as default values — canonical idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+"backend/server.py" = ["E402"]  # sys.path tweak before backend.* imports for `python backend/server.py`
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"

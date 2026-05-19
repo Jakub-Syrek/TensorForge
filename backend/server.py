@@ -10,7 +10,6 @@ from __future__ import annotations
 import io
 import sys
 from pathlib import Path
-from typing import Optional
 
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -23,8 +22,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.pipeline import EditRequest, FluxEditor, image_to_png_bytes
-
+from backend.imgutils import image_to_png_bytes
+from backend.pipeline import EditRequest, FluxEditor
 
 app = FastAPI(title="AiPictureModifier")
 editor = FluxEditor()
@@ -55,10 +54,10 @@ async def edit(
     image: UploadFile = File(...),
     mode: str = Form(...),
     prompt: str = Form(...),
-    mask: Optional[UploadFile] = File(None),
+    mask: UploadFile | None = File(None),
     steps: int = Form(28),
     guidance: float = Form(3.5),
-    seed: Optional[int] = Form(None),
+    seed: int | None = Form(None),
 ) -> Response:
     if mode not in {"kontext", "inpaint"}:
         raise HTTPException(400, f"mode must be 'kontext' or 'inpaint', got {mode!r}")
@@ -66,7 +65,7 @@ async def edit(
         raise HTTPException(400, "prompt is empty")
 
     img = Image.open(io.BytesIO(await image.read()))
-    mask_img: Optional[Image.Image] = None
+    mask_img: Image.Image | None = None
     if mode == "inpaint":
         if mask is None:
             raise HTTPException(400, "inpaint requires a mask")

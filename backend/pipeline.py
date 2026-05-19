@@ -5,13 +5,13 @@ plus VAE slicing/tiling are required — they're not optional polish.
 """
 from __future__ import annotations
 
-import io
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 
 import torch
 from PIL import Image
 
+from backend.imgutils import ensure_l, ensure_rgb, image_to_png_bytes  # noqa: F401  (re-export)
 
 KONTEXT_MODEL = "black-forest-labs/FLUX.1-Kontext-dev"
 FILL_MODEL = "black-forest-labs/FLUX.1-Fill-dev"
@@ -24,10 +24,10 @@ class EditRequest:
     mode: Mode
     prompt: str
     image: Image.Image
-    mask: Optional[Image.Image] = None  # required for inpaint, ignored for kontext
+    mask: Image.Image | None = None  # required for inpaint, ignored for kontext
     steps: int = 28
     guidance: float = 3.5
-    seed: Optional[int] = None
+    seed: int | None = None
 
 
 class FluxEditor:
@@ -77,7 +77,7 @@ class FluxEditor:
             device = "cuda" if torch.cuda.is_available() else "cpu"
             generator = torch.Generator(device=device).manual_seed(int(req.seed))
 
-        image = _ensure_rgb(req.image)
+        image = ensure_rgb(req.image)
 
         if req.mode == "kontext":
             result = self.kontext(
@@ -92,7 +92,7 @@ class FluxEditor:
         if req.mode == "inpaint":
             if req.mask is None:
                 raise ValueError("inpaint mode requires a mask image")
-            mask = _ensure_l(req.mask).resize(image.size)
+            mask = ensure_l(req.mask).resize(image.size)
             result = self.fill(
                 prompt=req.prompt,
                 image=image,
@@ -104,17 +104,3 @@ class FluxEditor:
             return result.images[0]
 
         raise ValueError(f"unknown mode: {req.mode}")
-
-
-def _ensure_rgb(img: Image.Image) -> Image.Image:
-    return img if img.mode == "RGB" else img.convert("RGB")
-
-
-def _ensure_l(img: Image.Image) -> Image.Image:
-    return img if img.mode == "L" else img.convert("L")
-
-
-def image_to_png_bytes(img: Image.Image) -> bytes:
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()

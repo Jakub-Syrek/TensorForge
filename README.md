@@ -1,5 +1,9 @@
 # AiPictureModifier
 
+[![CI](https://github.com/Jakub-Syrek/AiPictureModifier/actions/workflows/ci.yml/badge.svg)](https://github.com/Jakub-Syrek/AiPictureModifier/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+[![PyTorch nightly cu128](https://img.shields.io/badge/pytorch-nightly%20cu128-ee4c2c.svg)](https://pytorch.org/get-started/locally/)
+
 Web app for prompt-driven image editing with FLUX, sized for an RTX 5080
 (Blackwell · sm_120 · 16 GB).
 
