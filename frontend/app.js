@@ -116,8 +116,8 @@ async function runEdit() {
 
   $("run").disabled = true;
   setStatus("running…", "");
-  $("progressRow").classList.remove("hidden");
-  startProgressPoll();
+  // Switch the idle poller to the active (faster) cadence for this job.
+  startProgressPoll(500);
   try {
     const r = await fetch("/api/edit", { method: "POST", body: fd });
     if (!r.ok) throw new Error((await r.text()) || r.statusText);
@@ -132,23 +132,33 @@ async function runEdit() {
     setStatus(String(e.message || e), "err");
   } finally {
     $("run").disabled = false;
-    stopProgressPoll();
+    // Drop back to the slow idle cadence; don't stop completely so GPU
+    // stats stay live while the user inspects the result.
+    startProgressPoll(2000);
   }
 }
 
 // --- progress polling ---------------------------------------------------
 let progTimer = null;
+let progIntervalMs = 0;
 
-function startProgressPoll() {
-  stopProgressPoll();
-  pollOnce();  // immediate first tick
-  progTimer = setInterval(pollOnce, 500);
+function startProgressPoll(intervalMs) {
+  if (progTimer && progIntervalMs === intervalMs) return;  // already at that cadence
+  if (progTimer) clearInterval(progTimer);
+  progIntervalMs = intervalMs;
+  pollOnce();  // immediate tick so the panel reflects state without delay
+  progTimer = setInterval(pollOnce, intervalMs);
 }
 
 function stopProgressPoll() {
   if (progTimer) clearInterval(progTimer);
   progTimer = null;
+  progIntervalMs = 0;
 }
+
+// Kick off idle polling at page load — confirms backend is alive and keeps
+// GPU stats live even before the first edit.
+startProgressPoll(2000);
 
 async function pollOnce() {
   try {
