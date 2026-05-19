@@ -8,6 +8,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import sys
@@ -114,7 +115,9 @@ async def edit(
 
     job_progress.start(total=int(steps), mode=mode)
     try:
-        out = editor.edit(req)
+        # Offload the blocking inference to a worker thread so the FastAPI
+        # event loop stays free to serve /api/progress concurrently.
+        out = await asyncio.to_thread(editor.edit, req)
     except Exception as exc:  # surface failures to the UI rather than 500-spinner
         job_progress.finish(error=str(exc))
         raise HTTPException(500, f"edit failed: {exc}") from exc
