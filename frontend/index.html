@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AiPictureModifier · FLUX edit</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>AiPictureModifier</h1>
+    <div id="health" class="muted">checking GPU…</div>
+  </header>
+
+  <main>
+    <section class="panel left">
+      <div class="row">
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="file" accept="image/*" hidden />
+          <span id="dropHint">drop image · or click to choose</span>
+        </label>
+      </div>
+
+      <div class="row mode-row">
+        <div class="seg">
+          <button type="button" data-mode="kontext" class="seg-btn active">global edit (Kontext)</button>
+          <button type="button" data-mode="inpaint" class="seg-btn">inpaint (mask)</button>
+        </div>
+      </div>
+
+      <div class="row brush-row hidden" id="brushRow">
+        <label>brush <input id="brushSize" type="range" min="4" max="120" value="40" /></label>
+        <button type="button" id="clearMask">clear mask</button>
+      </div>
+
+      <div class="row">
+        <textarea id="prompt" placeholder="e.g. 'replace the sky with a dramatic sunset' (Kontext) — or for inpaint: describe only what should appear inside the mask"></textarea>
+      </div>
+
+      <div class="row params">
+        <label>steps <input id="steps" type="number" min="1" max="60" value="28" /></label>
+        <label>guidance <input id="guidance" type="number" step="0.1" min="0" max="20" value="3.5" /></label>
+        <label>seed <input id="seed" type="number" placeholder="random" /></label>
+      </div>
+
+      <div class="row">
+        <button id="run" class="run">edit image</button>
+        <span id="status" class="muted"></span>
+      </div>
+    </section>
+
+    <section class="panel right">
+      <div class="canvas-wrap">
+        <canvas id="imgCanvas"></canvas>
+        <canvas id="maskCanvas"></canvas>
+      </div>
+      <div class="row result-row">
+        <img id="result" alt="" />
+        <a id="download" class="hidden" download="edit.png">download</a>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

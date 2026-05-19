@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Model weights (HuggingFace cache & local)
+models/
+*.safetensors
+*.ckpt
+*.bin
+*.pt
+*.pth
+
+# Outputs
+outputs/
+results/
+*.png.tmp
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Env
+.env
+.env.local

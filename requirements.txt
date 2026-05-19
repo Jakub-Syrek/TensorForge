@@ -1,0 +1,16 @@
+# Note: torch/torchvision are NOT pinned here — scripts/setup.py installs the
+# Blackwell-compatible nightly (cu128) build separately. Installing torch from
+# this file would pull the stable cu121 wheels and break RTX 5080.
+
+diffusers>=0.32.0
+transformers>=4.46.0
+accelerate>=1.1.0
+safetensors>=0.4.5
+sentencepiece>=0.2.0
+protobuf>=4.25.0
+huggingface-hub>=0.26.0
+Pillow>=10.4.0
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
