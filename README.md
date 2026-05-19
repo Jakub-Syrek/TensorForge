@@ -43,5 +43,19 @@ each) into the HF cache.
 
 - `enable_model_cpu_offload()` plus VAE slicing/tiling are required, not
   optional — Flux is ~24 GB in fp16, the card is 16 GB.
-- Default 28 steps. Dropping to ~8 needs an acceleration LoRA (Hyper-SD or
-  Flux-Turbo) loaded via `pipe.load_lora_weights(...)` in `backend/pipeline.py`.
+- Default is 28 steps. To drop to ~8 steps, set the acceleration LoRA via
+  env vars before launching the server (read once at startup, fused into
+  both pipelines):
+
+  ```powershell
+  $env:FLUX_ACCEL_REPO   = "ByteDance/Hyper-SD"
+  $env:FLUX_ACCEL_WEIGHT = "Hyper-FLUX.1-dev-8steps-lora.safetensors"
+  $env:FLUX_ACCEL_SCALE  = "0.125"   # Hyper-SD recommended scale for 8 steps
+  python backend\server.py
+  ```
+
+  Then set `steps=8` in the UI. Caveat: Hyper-SD and Flux-Turbo were trained
+  on base FLUX.1-dev. Kontext and Fill share the transformer architecture so
+  the weights load cleanly, but quality at 8 steps on these variants is not
+  officially validated — verify visually before relying on it. Check
+  `GET /api/health` to confirm the LoRA is active.

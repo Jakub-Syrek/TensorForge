@@ -40,11 +40,16 @@ def index() -> FileResponse:
 @app.get("/api/health")
 def health() -> JSONResponse:
     cuda = torch.cuda.is_available()
+    accel = editor.accel
     payload = {
         "torch": torch.__version__,
         "cuda_available": cuda,
         "device": torch.cuda.get_device_name(0) if cuda else "cpu",
         "capability": list(torch.cuda.get_device_capability(0)) if cuda else None,
+        "accel": (
+            {"repo": accel.repo, "weight": accel.weight_name, "scale": accel.scale}
+            if accel is not None else None
+        ),
     }
     return JSONResponse(payload)
 
