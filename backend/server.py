@@ -29,10 +29,12 @@ from backend.imgutils import fit_long_edge, image_to_png_bytes
 from backend.pipeline import EditRequest, FluxEditor
 from backend.progress import job_progress, query_gpu_stats
 
-# Cap on the longest edge of the input image. 1024 is the Flux Kontext sweet
-# spot on a 16 GB card with cpu_offload — bigger doesn't add detail
-# proportional to the VRAM/PCIe cost. Override with FLUX_MAX_EDGE.
-MAX_EDGE = int(os.environ.get("FLUX_MAX_EDGE", "1024"))
+# Cap on the longest edge of the input image. 512 is the conservative
+# default for a 16 GB 5080 with cpu_offload — empirically 1024 saturates
+# VRAM (~95%) and degrades to ~470s/step due to PCIe thrashing; 768 is
+# borderline; 512 leaves real headroom. Detail is bounded by Flux's
+# internal latent resolution anyway. Override with FLUX_MAX_EDGE.
+MAX_EDGE = int(os.environ.get("FLUX_MAX_EDGE", "512"))
 
 app = FastAPI(title="AiPictureModifier")
 editor = FluxEditor()
