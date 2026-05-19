@@ -112,6 +112,22 @@ def test_edit_rejects_unknown_mode(client, stub_editor):
     assert r.status_code == 400
 
 
+def test_edit_round_trips_to_original_size(client, stub_editor):
+    """Server downscales input to MAX_EDGE for inference, then restores
+    the original canvas before returning. The stub editor echoes whatever
+    size it received — so the response should be back at the upload size."""
+    r = client.post(
+        "/api/edit",
+        data={"mode": "kontext", "prompt": "x", "steps": "1"},
+        files={"image": ("big.png", _png_bytes(size=(2048, 2048)), "image/png")},
+    )
+    assert r.status_code == 200, r.text
+    out = Image.open(BytesIO(r.content))
+    assert out.size == (2048, 2048)
+    # And the editor saw the downscaled size, not the upload size.
+    assert stub_editor.last_request.image.size == (1024, 1024)
+
+
 def test_edit_rejects_empty_prompt(client, stub_editor):
     r = client.post(
         "/api/edit",

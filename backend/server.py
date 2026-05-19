@@ -105,6 +105,12 @@ async def edit(
     except Exception as exc:  # surface failures to the UI rather than 500-spinner
         raise HTTPException(500, f"edit failed: {exc}") from exc
 
+    # Round-trip: restore the original canvas size so callers get back what
+    # they sent in. Upscale is LANCZOS — doesn't invent detail beyond Flux's
+    # 1024-px output, but matches user expectations.
+    if out.size != original_size:
+        out = out.resize(original_size, Image.Resampling.LANCZOS)
+
     return Response(content=image_to_png_bytes(out), media_type="image/png")
 
 
