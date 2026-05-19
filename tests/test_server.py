@@ -135,3 +135,36 @@ def test_edit_rejects_empty_prompt(client, stub_editor):
         files={"image": ("in.png", _png_bytes(), "image/png")},
     )
     assert r.status_code == 400
+
+
+def test_progress_endpoint_returns_idle_shape(client):
+    from backend import server as srv
+
+    # Reset job state — previous tests in the same session may have left it active.
+    srv.job_progress.finish()
+    srv.job_progress.active = False
+    srv.job_progress.step = 0
+    srv.job_progress.total = 0
+
+    r = client.get("/api/progress")
+    assert r.status_code == 200
+    body = r.json()
+    assert "job" in body
+    assert body["job"]["active"] is False
+    assert body["job"]["percent"] == 0.0
+    # gpu is None in CI (no nvidia-smi); on the user's machine it'd be populated
+    assert "gpu" in body
+
+
+def test_edit_marks_progress_finished_after_success(client, stub_editor):
+    from backend import server as srv
+
+    r = client.post(
+        "/api/edit",
+        data={"mode": "kontext", "prompt": "x", "steps": "4"},
+        files={"image": ("in.png", _png_bytes(), "image/png")},
+    )
+    assert r.status_code == 200
+    assert srv.job_progress.active is False
+    assert srv.job_progress.last_error is None
+    assert srv.job_progress.total == 4

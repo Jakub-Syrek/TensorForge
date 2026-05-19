@@ -26,6 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from backend.imgutils import fit_long_edge, image_to_png_bytes
 from backend.pipeline import EditRequest, FluxEditor
+from backend.progress import job_progress, query_gpu_stats
 
 # Cap on the longest edge of the input image. 1024 is the Flux Kontext sweet
 # spot on a 16 GB card with cpu_offload — bigger doesn't add detail
@@ -60,6 +61,17 @@ def health() -> JSONResponse:
         ),
     }
     return JSONResponse(payload)
+
+
+@app.get("/api/progress")
+def progress() -> JSONResponse:
+    gpu = query_gpu_stats()
+    return JSONResponse(
+        {
+            "job": job_progress.snapshot(),
+            "gpu": gpu.to_dict() if gpu is not None else None,
+        }
+    )
 
 
 @app.post("/api/edit")
@@ -100,10 +112,13 @@ async def edit(
         seed=int(seed) if seed not in (None, "") else None,
     )
 
+    job_progress.start(total=int(steps), mode=mode)
     try:
         out = editor.edit(req)
     except Exception as exc:  # surface failures to the UI rather than 500-spinner
+        job_progress.finish(error=str(exc))
         raise HTTPException(500, f"edit failed: {exc}") from exc
+    job_progress.finish()
 
     # Round-trip: restore the original canvas size so callers get back what
     # they sent in. Upscale is LANCZOS — doesn't invent detail beyond Flux's

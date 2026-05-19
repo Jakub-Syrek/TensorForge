@@ -47,6 +47,33 @@
         <button id="run" class="run">edit image</button>
         <span id="status" class="muted"></span>
       </div>
+
+      <div class="row progress-row hidden" id="progressRow">
+        <div class="prog">
+          <div class="prog-head">
+            <span id="progLabel">step 0/0</span>
+            <span id="progEta" class="muted"></span>
+          </div>
+          <div class="prog-bar"><div class="prog-fill" id="progFill"></div></div>
+        </div>
+        <div class="gpu">
+          <div class="gpu-head"><span id="gpuName">GPU</span></div>
+          <div class="gpu-row">
+            <span>util</span>
+            <div class="gpu-bar"><div class="gpu-fill" id="gpuUtilFill"></div></div>
+            <span id="gpuUtilLabel">—</span>
+          </div>
+          <div class="gpu-row">
+            <span>vram</span>
+            <div class="gpu-bar"><div class="gpu-fill" id="gpuVramFill"></div></div>
+            <span id="gpuVramLabel">—</span>
+          </div>
+          <div class="gpu-row muted small">
+            <span id="gpuTemp">— °C</span>
+            <span id="gpuPower">— W</span>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section class="panel right">

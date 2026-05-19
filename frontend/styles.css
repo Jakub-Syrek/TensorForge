@@ -158,6 +158,41 @@ a:hover { color: var(--accent-2); }
 #status.err { color: var(--danger); }
 #status.ok  { color: var(--accent-2); }
 
+.progress-row { flex-direction: column; align-items: stretch; gap: 10px; }
+
+.prog .prog-head, .gpu .gpu-head {
+  display: flex; justify-content: space-between;
+  font-size: 11px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+.prog-bar, .gpu-bar {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  height: 8px;
+  overflow: hidden;
+  flex: 1;
+}
+.prog-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  width: 0%;
+  transition: width 200ms ease-out;
+}
+.gpu { display: flex; flex-direction: column; gap: 4px; }
+.gpu-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--fg); }
+.gpu-row > span:first-child { color: var(--muted); width: 40px; text-transform: uppercase; }
+.gpu-row > span:last-child { font-variant-numeric: tabular-nums; min-width: 70px; text-align: right; }
+.gpu-fill {
+  height: 100%;
+  background: var(--accent);
+  width: 0%;
+  transition: width 200ms ease-out;
+}
+.gpu-row.small { font-size: 10px; justify-content: space-between; padding-top: 2px; }
+.gpu-row.small > span:first-child, .gpu-row.small > span:last-child { width: auto; min-width: 0; text-align: left; }
+
 @media (max-width: 900px) {
   main { grid-template-columns: 1fr; }
 }

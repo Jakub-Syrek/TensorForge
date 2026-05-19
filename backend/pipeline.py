@@ -14,6 +14,7 @@ import torch
 from PIL import Image
 
 from backend.imgutils import ensure_l, ensure_rgb, image_to_png_bytes  # noqa: F401  (re-export)
+from backend.progress import job_progress
 
 KONTEXT_MODEL = "black-forest-labs/FLUX.1-Kontext-dev"
 FILL_MODEL = "black-forest-labs/FLUX.1-Fill-dev"
@@ -125,6 +126,12 @@ class FluxEditor:
 
         image = ensure_rgb(req.image)
 
+        # diffusers calls this after each denoising step. We update the
+        # shared progress state so /api/progress can report N/total live.
+        def _on_step_end(pipe, step, timestep, callback_kwargs):
+            job_progress.advance(step)
+            return callback_kwargs
+
         if req.mode == "kontext":
             result = self.kontext(
                 prompt=req.prompt,
@@ -132,6 +139,7 @@ class FluxEditor:
                 num_inference_steps=req.steps,
                 guidance_scale=req.guidance,
                 generator=generator,
+                callback_on_step_end=_on_step_end,
             )
             return result.images[0]
 
@@ -146,6 +154,7 @@ class FluxEditor:
                 num_inference_steps=req.steps,
                 guidance_scale=req.guidance,
                 generator=generator,
+                callback_on_step_end=_on_step_end,
             )
             return result.images[0]
 

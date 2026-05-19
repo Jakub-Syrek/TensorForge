@@ -116,6 +116,8 @@ async function runEdit() {
 
   $("run").disabled = true;
   setStatus("running…", "");
+  $("progressRow").classList.remove("hidden");
+  startProgressPoll();
   try {
     const r = await fetch("/api/edit", { method: "POST", body: fd });
     if (!r.ok) throw new Error((await r.text()) || r.statusText);
@@ -130,7 +132,66 @@ async function runEdit() {
     setStatus(String(e.message || e), "err");
   } finally {
     $("run").disabled = false;
+    stopProgressPoll();
   }
+}
+
+// --- progress polling ---------------------------------------------------
+let progTimer = null;
+
+function startProgressPoll() {
+  stopProgressPoll();
+  pollOnce();  // immediate first tick
+  progTimer = setInterval(pollOnce, 500);
+}
+
+function stopProgressPoll() {
+  if (progTimer) clearInterval(progTimer);
+  progTimer = null;
+}
+
+async function pollOnce() {
+  try {
+    const r = await fetch("/api/progress");
+    if (!r.ok) return;
+    const { job, gpu } = await r.json();
+    renderJob(job);
+    renderGpu(gpu);
+  } catch { /* ignore transient failures */ }
+}
+
+function renderJob(job) {
+  const pct = job.percent || 0;
+  $("progFill").style.width = `${pct}%`;
+  const label = job.total
+    ? `step ${job.step}/${job.total} · ${pct.toFixed(0)}%`
+    : (job.active ? "warming up…" : "idle");
+  $("progLabel").textContent = label;
+  if (job.elapsed_s && job.total && job.step > 0) {
+    const perStep = job.elapsed_s / job.step;
+    const remaining = perStep * (job.total - job.step);
+    $("progEta").textContent =
+      `${job.elapsed_s.toFixed(1)}s elapsed · ~${remaining.toFixed(0)}s left · ${perStep.toFixed(1)}s/step`;
+  } else if (job.elapsed_s) {
+    $("progEta").textContent = `${job.elapsed_s.toFixed(1)}s elapsed`;
+  } else {
+    $("progEta").textContent = "";
+  }
+}
+
+function renderGpu(gpu) {
+  if (!gpu) {
+    $("gpuName").textContent = "GPU (nvidia-smi unavailable)";
+    return;
+  }
+  $("gpuName").textContent = gpu.name || "GPU";
+  $("gpuUtilFill").style.width = `${gpu.util_percent}%`;
+  $("gpuUtilLabel").textContent = `${gpu.util_percent}%`;
+  $("gpuVramFill").style.width = `${gpu.vram_percent}%`;
+  $("gpuVramLabel").textContent =
+    `${(gpu.vram_used_mb / 1024).toFixed(1)} / ${(gpu.vram_total_mb / 1024).toFixed(1)} GB`;
+  $("gpuTemp").textContent = gpu.temperature_c != null ? `${gpu.temperature_c} °C` : "— °C";
+  $("gpuPower").textContent = gpu.power_w != null ? `${gpu.power_w.toFixed(0)} W` : "— W";
 }
 
 function setStatus(msg, kind) {
