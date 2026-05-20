@@ -3,7 +3,16 @@
 Endpoints:
   GET  /              -> serves the single-page UI
   GET  /api/health    -> reports GPU + sm version
-  POST /api/edit      -> multipart: image, mask?, mode, prompt, steps, guidance, seed
+  GET  /api/progress  -> live job state + GPU stats
+  POST /api/abort     -> request cancellation of running edit
+  POST /api/edit      -> SYNCHRONOUS edit (legacy/compat)
+
+  POST /api/tasks                    -> enqueue async edit, returns {task_id}
+  GET  /api/tasks/{task_id}          -> task + variant statuses
+  GET  /api/tasks                    -> list recent tasks
+  POST /api/tasks/{task_id}/approve  -> body {variant_id}
+  DELETE /api/tasks/{task_id}        -> wipe DB row + storage
+  GET  /api/variants/{variant_id}/output -> raw PNG bytes
 """
 
 from __future__ import annotations
@@ -13,6 +22,8 @@ import io
 import os
 import random
 import sys
+from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -20,15 +31,19 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
+from pydantic import BaseModel
 
 # Allow `python backend/server.py` execution.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from backend import storage
+from backend.db import Task, Variant, get_session, init_db
 from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_bytes, sharpen
 from backend.pipeline import QUANT_MODE, EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress, query_gpu_stats
+from backend.queue import TaskWorker
 
 # Cap on the longest edge of the input image. The right value depends on
 # whether NF4 is active:
@@ -39,8 +54,24 @@ from backend.progress import job_progress, query_gpu_stats
 # Override either default with FLUX_MAX_EDGE env var.
 MAX_EDGE = int(os.environ.get("FLUX_MAX_EDGE", "1024" if QUANT_MODE else "512"))
 
-app = FastAPI(title="AiPictureModifier")
 editor = FluxEditor()
+task_worker = TaskWorker(editor)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Startup: ensure data dirs + DB schema exist, then bring up the worker
+    # thread that drains the task queue.
+    storage.init()
+    init_db()
+    task_worker.start()
+    yield
+    # Shutdown: signal the worker, give it a few seconds to flush. We don't
+    # try to interrupt mid-inference here — abort flow is via /api/abort.
+    task_worker.stop(timeout=5.0)
+
+
+app = FastAPI(title="AiPictureModifier", lifespan=lifespan)
 
 FRONTEND_DIR = REPO_ROOT / "frontend"
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
@@ -95,6 +126,177 @@ def abort() -> JSONResponse:
         {"aborted": requested, "active": job_progress.active},
         status_code=status,
     )
+
+
+class ApproveBody(BaseModel):
+    variant_id: str
+
+
+def _serialize_variant(v: Variant) -> dict:
+    return {
+        "id": v.id,
+        "seed": v.seed,
+        "status": v.status,
+        "approved": v.approved,
+        "runtime_ms": v.runtime_ms,
+        "error": v.error,
+        "output_url": f"/api/variants/{v.id}/output" if v.output_path else None,
+        "created_at": v.created_at.isoformat() if v.created_at else None,
+        "finished_at": v.finished_at.isoformat() if v.finished_at else None,
+    }
+
+
+def _serialize_task(t: Task) -> dict:
+    return {
+        "id": t.id,
+        "status": t.status,
+        "mode": t.mode,
+        "prompt": t.prompt,
+        "variants_requested": t.variants_requested,
+        "params": t.params,
+        "original_size": [t.original_width, t.original_height],
+        "error": t.error,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "started_at": t.started_at.isoformat() if t.started_at else None,
+        "finished_at": t.finished_at.isoformat() if t.finished_at else None,
+        "variants": [_serialize_variant(v) for v in t.variants],
+    }
+
+
+@app.post("/api/tasks")
+async def create_task(
+    image: UploadFile = File(...),
+    mode: str = Form(...),
+    prompt: str = Form(...),
+    mask: UploadFile | None = File(None),
+    steps: int = Form(28),
+    guidance: float = Form(3.5),
+    seed: int | None = Form(None),
+    use_accel: bool = Form(True),
+    sharpen_level: str = Form("off"),
+    max_edge: int | None = Form(None),
+    variants: int = Form(1),
+) -> JSONResponse:
+    """Enqueue an edit. Returns task id and initial state; the worker
+    pulls it asynchronously. Poll GET /api/tasks/{id} for status, or wait
+    on the variant output URL once status === 'done'."""
+    if mode not in {"kontext", "inpaint", "qwen"}:
+        raise HTTPException(400, f"mode must be 'kontext', 'inpaint', or 'qwen', got {mode!r}")
+    if not prompt.strip():
+        raise HTTPException(400, "prompt is empty")
+    if mode == "inpaint" and mask is None:
+        raise HTTPException(400, "inpaint requires a mask")
+    variants_n = max(1, min(8, int(variants)))
+
+    effective_max_edge = MAX_EDGE if max_edge is None else max(64, min(2048, int(max_edge)))
+
+    # Read once so we can persist + read the size before queuing.
+    img_bytes = await image.read()
+    img = Image.open(io.BytesIO(img_bytes))
+    img = ImageOps.exif_transpose(img)
+    original_w, original_h = img.size
+
+    base_seed = random.randint(0, 2**31 - 1) if seed in (None, "") else int(seed)
+    seeds = [base_seed if i == 0 else random.randint(0, 2**31 - 1) for i in range(variants_n)]
+
+    with get_session() as s:
+        t = Task(
+            mode=mode,
+            prompt=prompt,
+            input_path="",
+            original_width=original_w,
+            original_height=original_h,
+            variants_requested=variants_n,
+            params={
+                "steps": int(steps),
+                "guidance": float(guidance),
+                "use_accel": bool(use_accel),
+                "sharpen_level": sharpen_level,
+                "max_edge": effective_max_edge,
+                "base_seed": base_seed,
+            },
+        )
+        s.add(t)
+        s.flush()  # need t.id for storage paths
+
+        input_path = storage.save_input(t.id, img_bytes)
+        t.input_path = str(input_path)
+        if mode == "inpaint":
+            mask_bytes = await mask.read()
+            t.mask_path = str(storage.save_mask(t.id, mask_bytes))
+
+        for sd in seeds:
+            s.add(Variant(task_id=t.id, seed=sd))
+        s.commit()
+        s.refresh(t)
+        return JSONResponse(_serialize_task(t), status_code=202)
+
+
+@app.get("/api/tasks/{task_id}")
+def get_task(task_id: str) -> JSONResponse:
+    with get_session() as s:
+        t = s.get(Task, task_id)
+        if t is None:
+            raise HTTPException(404, "task not found")
+        return JSONResponse(_serialize_task(t))
+
+
+@app.get("/api/tasks")
+def list_tasks(limit: int = 20) -> JSONResponse:
+    """Most recent tasks first. Default 20, intended for the history strip."""
+    limit = max(1, min(100, int(limit)))
+    with get_session() as s:
+        rows = s.query(Task).order_by(Task.created_at.desc()).limit(limit).all()
+        return JSONResponse({"tasks": [_serialize_task(t) for t in rows]})
+
+
+@app.post("/api/tasks/{task_id}/approve")
+def approve_variant(task_id: str, body: ApproveBody) -> JSONResponse:
+    with get_session() as s:
+        t = s.get(Task, task_id)
+        if t is None:
+            raise HTTPException(404, "task not found")
+        v = s.get(Variant, body.variant_id)
+        if v is None or v.task_id != task_id:
+            raise HTTPException(404, "variant not found under this task")
+        if v.status != "done":
+            raise HTTPException(409, f"variant is not done (status: {v.status})")
+        # Clear previous approval on the same task — only one approved variant per task.
+        for sibling in t.variants:
+            if sibling.id != v.id:
+                sibling.approved = False
+        v.approved = True
+        t.status = "approved"
+        t.finished_at = t.finished_at or datetime.utcnow()
+        s.commit()
+        s.refresh(t)
+        return JSONResponse(_serialize_task(t))
+
+
+@app.delete("/api/tasks/{task_id}")
+def delete_task(task_id: str) -> JSONResponse:
+    with get_session() as s:
+        t = s.get(Task, task_id)
+        if t is None:
+            raise HTTPException(404, "task not found")
+        s.delete(t)
+        s.commit()
+    storage.delete_task_dir(task_id)
+    return JSONResponse({"deleted": task_id})
+
+
+@app.get("/api/variants/{variant_id}/output")
+def variant_output(variant_id: str) -> FileResponse:
+    with get_session() as s:
+        v = s.get(Variant, variant_id)
+        if v is None:
+            raise HTTPException(404, "variant not found")
+        if not v.output_path:
+            raise HTTPException(404, "variant has no output yet")
+        p = Path(v.output_path)
+        if not p.exists():
+            raise HTTPException(410, "output file gone (was the task deleted?)")
+        return FileResponse(p, media_type="image/png")
 
 
 @app.post("/api/edit")
