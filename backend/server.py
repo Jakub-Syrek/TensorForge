@@ -43,7 +43,7 @@ from backend.db import Task, Variant, get_session, init_db
 from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_bytes, sharpen
 from backend.pipeline import QUANT_MODE, EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress, query_gpu_stats
-from backend.queue import TaskWorker
+from backend.worker import TaskWorker
 
 # Cap on the longest edge of the input image. The right value depends on
 # whether NF4 is active:

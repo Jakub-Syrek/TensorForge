@@ -28,7 +28,7 @@ def app_env(tmp_path, monkeypatch):
     importlib.reload(d)
     d.init_db()
     s.init()
-    import backend.queue as q
+    import backend.worker as q
 
     importlib.reload(q)
     import backend.server as srv

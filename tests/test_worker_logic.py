@@ -24,7 +24,7 @@ def env(tmp_path, monkeypatch):
 
     importlib.reload(d)
     d.init_db()
-    import backend.queue as q
+    import backend.worker as q
 
     importlib.reload(q)
     return q, d
