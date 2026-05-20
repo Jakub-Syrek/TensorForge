@@ -2,7 +2,15 @@ from io import BytesIO
 
 from PIL import Image
 
-from backend.imgutils import ensure_l, ensure_rgb, fit_long_edge, image_to_png_bytes, sharpen
+from backend.imgutils import (
+    FLUX_BUCKETS_1024,
+    ensure_l,
+    ensure_rgb,
+    fit_long_edge,
+    fit_to_flux_bucket,
+    image_to_png_bytes,
+    sharpen,
+)
 
 
 def test_ensure_rgb_passthrough():
@@ -59,6 +67,51 @@ def test_fit_long_edge_rounds_to_multiple_of_16():
     w, h = out.size
     assert w % 16 == 0 and h % 16 == 0
     assert max(w, h) <= 1000  # never exceed the cap
+
+
+def test_fit_to_flux_bucket_square_input_snaps_to_1024_square():
+    img = Image.new("RGB", (1024, 1024))
+    out = fit_to_flux_bucket(img, max_edge=1024)
+    assert out is img  # already a bucket
+
+
+def test_fit_to_flux_bucket_portrait_phone_aspect_snaps_to_3to4():
+    """3024x4032 phone shot (aspect ~0.75) -> closest bucket is 896x1152 (~0.78)."""
+    img = Image.new("RGB", (3024, 4032))
+    out = fit_to_flux_bucket(img, max_edge=1024)
+    assert out.size == (896, 1152)
+
+
+def test_fit_to_flux_bucket_landscape_3to2_snaps():
+    """4032x2688 (aspect 1.5) -> closest 1216x832 (1.46)."""
+    img = Image.new("RGB", (4032, 2688))
+    out = fit_to_flux_bucket(img, max_edge=1024)
+    assert out.size == (1216, 832)
+
+
+def test_fit_to_flux_bucket_scales_with_max_edge():
+    """max_edge=512 should halve all bucket dimensions (proportional scale)."""
+    img = Image.new("RGB", (1024, 1024))
+    out = fit_to_flux_bucket(img, max_edge=512)
+    assert out.size == (512, 512)
+
+
+def test_fit_to_flux_bucket_output_dims_divisible_by_16():
+    """Pick odd-ish aspects and verify the /16 alignment holds at lower
+    max_edge where rounding can land off."""
+    for src in [(1933, 2895), (2480, 3508), (3840, 2160), (1080, 1920)]:
+        img = Image.new("RGB", src)
+        out = fit_to_flux_bucket(img, max_edge=640)
+        w, h = out.size
+        assert w % 16 == 0, f"{src} -> {out.size}"
+        assert h % 16 == 0, f"{src} -> {out.size}"
+
+
+def test_fit_to_flux_bucket_all_baseline_buckets_are_divisible_by_16():
+    """Constant-time sanity on the bucket list itself."""
+    for w, h in FLUX_BUCKETS_1024:
+        assert w % 16 == 0, (w, h)
+        assert h % 16 == 0, (w, h)
 
 
 def test_sharpen_off_returns_same_instance():

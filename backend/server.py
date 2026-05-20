@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.imgutils import fit_long_edge, image_to_png_bytes, sharpen
+from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_bytes, sharpen
 from backend.pipeline import QUANT_MODE, EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress, query_gpu_stats
 
@@ -121,9 +121,20 @@ async def edit(
 
     img = Image.open(io.BytesIO(await image.read()))
     original_size = img.size
-    img = fit_long_edge(img, effective_max_edge)
+    # Flux Kontext / Fill bucket aspect ratios internally during inference,
+    # which side-crops content when the input doesn't land on a known bucket.
+    # Pre-snap to the closest Flux bucket on the server so the model has
+    # nothing left to crop; the LANCZOS round-trip then restores the user's
+    # original aspect (with a few-percent stretch absorbed). Qwen has its
+    # own architecture and bucket profile — leave it on the simpler fit.
+    if mode in ("kontext", "inpaint"):
+        img = fit_to_flux_bucket(img, effective_max_edge)
+    else:
+        img = fit_long_edge(img, effective_max_edge)
     if img.size != original_size:
-        print(f"resized input {original_size} -> {img.size} (max_edge={effective_max_edge})")
+        print(
+            f"resized input {original_size} -> {img.size} (mode={mode}, max_edge={effective_max_edge})"
+        )
 
     mask_img: Image.Image | None = None
     if mode == "inpaint":
