@@ -10,6 +10,8 @@ const state = {
   lastResultBlob: null,  // last successful /api/edit response (for chaining)
   userAborted: false,
   accelAvailable: false,  // set true when /api/health reports accel config
+  pipelineMode: false,
+  currentPipelineId: null,
 };
 
 // In-memory history of successful edits. Cleared on page refresh.
@@ -75,6 +77,18 @@ function fitCanvases(w, h) {
   imgCanvas.width = maskCanvas.width = w;
   imgCanvas.height = maskCanvas.height = h;
 }
+
+// --- pipeline mode toggle ----------------------------------------------
+$("pipelineToggle").addEventListener("change", (e) => {
+  state.pipelineMode = e.target.checked;
+  document.querySelector(".pipeline-toggle").classList.toggle("on", state.pipelineMode);
+  // Repurpose the run button label so the user knows what they're firing.
+  $("run").textContent = state.pipelineMode ? "run pipeline" : "edit image";
+  // Hint via placeholder when pipeline mode is on.
+  $("prompt").placeholder = state.pipelineMode
+    ? "one step per line. optional [mode] prefix, e.g.:\n[generate] a sunset over mountains\nadd a small cabin in the foreground\n[kontext] make it twilight"
+    : "e.g. 'replace the sky with a dramatic sunset' (Kontext) — or for inpaint: describe only what should appear inside the mask";
+});
 
 // --- accel toggle: when on, auto-pin steps to 8 (Hyper-SD default);
 // when off, auto-pin to 28 (full quality). User can still override manually.
@@ -151,6 +165,12 @@ $("run").addEventListener("click", runEdit);
 async function runEdit() {
   const prompt = $("prompt").value.trim();
   if (!prompt) return setStatus("prompt is empty", "err");
+
+  // Pipeline mode hands off to a different code path entirely.
+  if (state.pipelineMode) {
+    return runPipeline(prompt);
+  }
+
   // Image is required for every mode except generate; auto resolves
   // server-side so we accept it even without an image.
   const needsImage = !(state.mode === "generate" || (state.mode === "auto" && !state.imageFile));
@@ -208,6 +228,137 @@ async function runEdit() {
     state.currentTaskId = null;
     startProgressPoll(2000);
   }
+}
+
+// --- pipeline submission + polling -------------------------------------
+function parsePipelineSteps(raw) {
+  const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+  return lines.map((line) => {
+    const m = line.match(/^\[(\w+)\]\s+(.+)$/);
+    if (m) return { mode: m[1].toLowerCase(), prompt: m[2] };
+    return { mode: "auto", prompt: line };
+  });
+}
+
+async function runPipeline(rawPrompt) {
+  const steps = parsePipelineSteps(rawPrompt);
+  if (steps.length === 0) return setStatus("no steps in pipeline", "err");
+  if (steps.length > 10) return setStatus(`too many steps (${steps.length} > 10)`, "err");
+
+  // Validate per-step modes client-side for a fast error before we round-trip.
+  const VALID = new Set(["auto", "kontext", "inpaint", "qwen", "generate"]);
+  for (let i = 0; i < steps.length; i++) {
+    if (!VALID.has(steps[i].mode)) {
+      return setStatus(`step ${i + 1}: invalid mode '${steps[i].mode}'`, "err");
+    }
+  }
+
+  const fd = new FormData();
+  if (state.imageFile) fd.append("image", state.imageFile);
+  fd.append("steps_json", JSON.stringify(steps));
+  if (state.mode === "inpaint" && state.maskDirty) {
+    fd.append("mask", await maskBlob(), "mask.png");
+  }
+
+  $("run").disabled = true;
+  $("abort").classList.remove("hidden");
+  state.userAborted = false;
+  setStatus(`submitting pipeline (${steps.length} steps)…`, "");
+  startProgressPoll(500);
+  try {
+    const r = await fetch("/api/pipelines", { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    const pipe = await r.json();
+    state.currentPipelineId = pipe.pipeline_id;
+    renderPipelineProgress(pipe);
+    const final = await pollPipeline(pipe.pipeline_id);
+    if (final === null) return;
+    renderPipelineProgress(final);
+    const lastDone = [...final.steps].reverse().find((t) => t.status === "done");
+    if (lastDone) {
+      const v = lastDone.variants.find((x) => x.status === "done");
+      if (v && v.output_url) {
+        state.lastResultUrl = v.output_url;
+        state.lastVariantId = v.id;
+        $("download").href = v.output_url;
+      }
+    }
+    setStatus(`pipeline ${final.status} · ${final.steps.length} steps`, final.status === "done" ? "ok" : "err");
+  } catch (e) {
+    if (state.userAborted) setStatus("aborted", "err");
+    else setStatus(String(e.message || e), "err");
+  } finally {
+    $("run").disabled = false;
+    $("abort").classList.add("hidden");
+    state.currentPipelineId = null;
+    startProgressPoll(2000);
+  }
+}
+
+async function pollPipeline(pid) {
+  const TERMINAL = new Set(["done", "failed", "aborted"]);
+  while (true) {
+    if (state.userAborted) return null;
+    let r;
+    try {
+      r = await fetch(`/api/pipelines/${pid}`);
+    } catch {
+      await new Promise((res) => setTimeout(res, 500));
+      continue;
+    }
+    if (!r.ok) throw new Error(`pipeline fetch failed: ${r.status}`);
+    const pipe = await r.json();
+    renderPipelineProgress(pipe);
+    if (TERMINAL.has(pipe.status)) return pipe;
+    await new Promise((res) => setTimeout(res, 500));
+  }
+}
+
+function renderPipelineProgress(pipe) {
+  const wrap = $("resultWrap");
+  wrap.innerHTML = "";
+  const list = document.createElement("div");
+  list.className = "pipeline-steps";
+  pipe.steps.forEach((t, i) => {
+    const row = document.createElement("div");
+    row.className = `pstep ${t.status}`;
+    const idx = document.createElement("span");
+    idx.className = "pstep-idx";
+    idx.textContent = String(i + 1);
+    row.appendChild(idx);
+
+    const body = document.createElement("div");
+    body.className = "pstep-body";
+    const promptLine = document.createElement("div");
+    promptLine.className = "pstep-prompt";
+    promptLine.textContent = `[${t.mode}] ${t.prompt}`;
+    const meta = document.createElement("div");
+    meta.className = "pstep-meta";
+    const runtimes = t.variants.filter((v) => v.runtime_ms).map((v) => v.runtime_ms);
+    const elapsed = runtimes.length ? `${(runtimes[0] / 1000).toFixed(1)} s` : "";
+    meta.textContent = `${t.status}${elapsed ? " · " + elapsed : ""}${t.error ? " · " + t.error : ""}`;
+    body.appendChild(promptLine);
+    body.appendChild(meta);
+    row.appendChild(body);
+
+    const doneVariant = t.variants.find((v) => v.status === "done" && v.output_url);
+    if (doneVariant) {
+      const thumb = document.createElement("div");
+      thumb.className = "pstep-thumb";
+      thumb.style.backgroundImage = `url(${doneVariant.output_url})`;
+      thumb.title = "click to use this step's output as input";
+      thumb.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        state.lastResultUrl = doneVariant.output_url;
+        state.lastVariantId = doneVariant.id;
+      });
+      row.appendChild(thumb);
+    }
+    list.appendChild(row);
+  });
+  wrap.appendChild(list);
+  wrap.classList.remove("hidden");
+  $("resultActions").classList.remove("hidden");
 }
 
 // Poll /api/tasks/:id until it reaches a terminal state (done/failed/aborted/approved).

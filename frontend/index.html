@@ -43,6 +43,13 @@
         <textarea id="prompt" placeholder="e.g. 'replace the sky with a dramatic sunset' (Kontext) — or for inpaint: describe only what should appear inside the mask"></textarea>
       </div>
 
+      <div class="row pipeline-row">
+        <label class="pipeline-toggle" title="When on, each non-empty line of the prompt is a separate step. Prefix a line with [mode] (e.g. [generate], [kontext]) to force that model for that step; otherwise the line goes through auto-routing. Steps run sequentially and feed each other.">
+          <input type="checkbox" id="pipelineToggle" />
+          <span>pipeline mode (each line = a step, optional [mode] prefix)</span>
+        </label>
+      </div>
+
       <div class="row params">
         <label title="20 for exploration / iteration · 28 for final render. Above 28 wastes compute — Flux is rectified flow, converges fast.">steps <input id="steps" type="number" min="1" max="60" value="28" /></label>
         <label title="2.5–4.0 sane range. Lower = creative, higher = literal. Above 5 burns detail.">guidance <input id="guidance" type="number" step="0.1" min="0" max="20" value="3.5" /></label>
