@@ -108,17 +108,22 @@ async def edit(
     seed: int | None = Form(None),
     use_accel: bool = Form(True),
     sharpen_level: str = Form("off"),
+    max_edge: int | None = Form(None),
 ) -> Response:
     if mode not in {"kontext", "inpaint", "qwen"}:
         raise HTTPException(400, f"mode must be 'kontext', 'inpaint', or 'qwen', got {mode!r}")
     if not prompt.strip():
         raise HTTPException(400, "prompt is empty")
 
+    # Per-request max_edge override (clamped to a sane range). Falls back to
+    # the env-configured server default when the client omits it.
+    effective_max_edge = MAX_EDGE if max_edge is None else max(64, min(2048, int(max_edge)))
+
     img = Image.open(io.BytesIO(await image.read()))
     original_size = img.size
-    img = fit_long_edge(img, MAX_EDGE)
+    img = fit_long_edge(img, effective_max_edge)
     if img.size != original_size:
-        print(f"resized input {original_size} -> {img.size} (FLUX_MAX_EDGE={MAX_EDGE})")
+        print(f"resized input {original_size} -> {img.size} (max_edge={effective_max_edge})")
 
     mask_img: Image.Image | None = None
     if mode == "inpaint":

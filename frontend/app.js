@@ -25,6 +25,18 @@ const maskCtx = maskCanvas.getContext("2d");
 fetch("/api/health").then(r => r.json()).then(h => {
   const dev = h.cuda_available ? `${h.device} · sm_${(h.capability || []).join("")}` : "CPU";
   $("health").textContent = `torch ${h.torch} · ${dev}`;
+
+  // Profile line in the header — at-a-glance "what's loaded" without
+  // having to remember which launch profile was used.
+  const profileParts = [];
+  profileParts.push(h.quant ? `quant: ${h.quant}` : "quant: bf16");
+  if (h.max_edge) profileParts.push(`max_edge: ${h.max_edge}`);
+  if (h.accel && h.accel.repo) profileParts.push(`accel: ${h.accel.repo.split("/").pop()}`);
+  $("profile").textContent = profileParts.join(" · ");
+  // Pre-fill the max_edge input placeholder with the server default so
+  // the user sees what 'empty = server' actually means.
+  if (h.max_edge) $("maxEdge").placeholder = String(h.max_edge);
+
   // Reveal the accel toggle only if the server has a LoRA configured.
   if (h.accel && h.accel.repo) {
     state.accelAvailable = true;
@@ -148,6 +160,7 @@ async function runEdit() {
   fd.append("guidance", $("guidance").value);
   if ($("seed").value) fd.append("seed", $("seed").value);
   fd.append("sharpen_level", $("sharpen").value);
+  if ($("maxEdge").value) fd.append("max_edge", $("maxEdge").value);
   // use_accel: send the checkbox state IF the toggle is visible (accel
   // configured server-side). Otherwise omit — backend defaults to True
   // which is a no-op when no LoRA is loaded.
@@ -178,6 +191,11 @@ async function runEdit() {
     $("result").src = url;
     state.lastResultBlob = blob;
     $("download").href = url;
+    // Compare slider: original is the input we just submitted, result is
+    // what came back. Both URLs displayed; the slider clips the result.
+    $("compareOriginal").src = URL.createObjectURL(state.imageFile);
+    $("compareWrap").classList.remove("hidden");
+    setCompareSplit(50);
     $("resultActions").classList.remove("hidden");
     if (usedSeed) {
       // Pin the seed used by this run so the next click reuses it —
@@ -250,10 +268,35 @@ $("refresh").addEventListener("click", () => {
   imgCanvas.width = maskCanvas.width = 0;
   imgCanvas.height = maskCanvas.height = 0;
   $("result").removeAttribute("src");
+  $("compareOriginal").removeAttribute("src");
+  $("compareWrap").classList.add("hidden");
   $("resultActions").classList.add("hidden");
   state.lastResultBlob = null;
   setStatus("", "");
 });
+
+// --- compare slider ----------------------------------------------------
+function setCompareSplit(percent) {
+  const clamped = Math.max(0, Math.min(100, percent));
+  document.querySelector(".compare-wrap").style.setProperty("--split", `${clamped}%`);
+}
+
+(function wireCompareDrag() {
+  const handle = $("compareHandle");
+  let dragging = false;
+  handle.addEventListener("pointerdown", (e) => {
+    dragging = true;
+    handle.setPointerCapture(e.pointerId);
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const wrap = document.querySelector(".compare-wrap");
+    const rect = wrap.getBoundingClientRect();
+    const pct = ((e.clientX - rect.left) / rect.width) * 100;
+    setCompareSplit(pct);
+  });
+  handle.addEventListener("pointerup", () => { dragging = false; });
+})();
 
 // --- history: ring buffer of last HISTORY_MAX successful edits ---------
 function addHistoryEntry(entry) {
@@ -315,6 +358,8 @@ function loadHistoryEntry(item) {
   }
   // Drop the displayed result so it's clear the next edit starts fresh.
   $("result").removeAttribute("src");
+  $("compareOriginal").removeAttribute("src");
+  $("compareWrap").classList.add("hidden");
   $("resultActions").classList.add("hidden");
   setStatus(`loaded · seed ${item.seed}`, "ok");
 }
@@ -345,6 +390,8 @@ $("useAsInput").addEventListener("click", () => {
   $("seed").value = "";
   // Drop the displayed result — it's now the input.
   $("result").removeAttribute("src");
+  $("compareOriginal").removeAttribute("src");
+  $("compareWrap").classList.add("hidden");
   $("resultActions").classList.add("hidden");
   setStatus("chained — write the next instruction", "ok");
 });

@@ -112,6 +112,29 @@ def test_edit_rejects_unknown_mode(client, stub_editor):
     assert r.status_code == 400
 
 
+def test_edit_per_request_max_edge_override(client, stub_editor):
+    """The client can override the server's MAX_EDGE per request. Server
+    clamps to [64, 2048]; out-of-range values are silently capped (not
+    rejected) — the form field is a convenience, not a validation gate."""
+    r = client.post(
+        "/api/edit",
+        data={"mode": "kontext", "prompt": "x", "steps": "1", "max_edge": "256"},
+        files={"image": ("big.png", _png_bytes(size=(2048, 2048)), "image/png")},
+    )
+    assert r.status_code == 200
+    # Editor received the image after our override-aware fit_long_edge
+    assert max(stub_editor.last_request.image.size) == 256
+
+    # Out-of-range gets clamped, not rejected.
+    r = client.post(
+        "/api/edit",
+        data={"mode": "kontext", "prompt": "x", "steps": "1", "max_edge": "99999"},
+        files={"image": ("big.png", _png_bytes(size=(2048, 2048)), "image/png")},
+    )
+    assert r.status_code == 200
+    assert max(stub_editor.last_request.image.size) <= 2048
+
+
 def test_edit_accepts_sharpen_level(client, stub_editor):
     """sharpen_level is an optional form field; defaults to 'off'. The
     transformation happens server-side after LANCZOS, so we just verify
