@@ -199,6 +199,53 @@ button.secondary:hover { color: var(--fg); border-color: var(--accent); }
   display: block;
 }
 
+/* Multi-variant grid: shown when a task returns >1 variant. Cells are
+   clickable to pick a winner; the approved cell gets an accent border. */
+.variants-grid {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  gap: 6px;
+  padding: 6px;
+}
+.variants-grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+.variants-grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.variants-grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
+.variant-cell {
+  position: relative;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 80ms, transform 80ms;
+  min-height: 0;
+}
+.variant-cell:hover { border-color: var(--accent-2); }
+.variant-cell.approved { border-color: var(--accent); border-width: 2px; box-shadow: 0 0 0 2px rgba(255, 107, 26, 0.25); }
+.variant-cell.selected { outline: 1px solid var(--accent-2); }
+.variant-cell img {
+  width: 100%; height: 100%; object-fit: contain;
+  display: block;
+  background: #000;
+}
+.variant-cell .vmeta {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  background: rgba(0, 0, 0, 0.75);
+  color: var(--accent-2);
+  padding: 2px 6px;
+  font-size: 10px;
+  display: flex; justify-content: space-between;
+  font-variant-numeric: tabular-nums;
+}
+.variant-cell .vplaceholder {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+
 .result-row { flex-direction: row; align-items: center; gap: 12px; }
 
 .result-actions { display: flex; flex-direction: column; gap: 8px; }

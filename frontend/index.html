@@ -54,6 +54,7 @@
             <option value="strong">strong</option>
           </select>
         </label>
+        <label title="Number of variants to generate (different seeds, same prompt + params). 1 = direct run; 2-8 = pick the best afterwards. Worker is single-GPU so variants run sequentially.">variants <input id="variants" type="number" min="1" max="8" value="1" /></label>
       </div>
 
       <div class="row accel-row hidden" id="accelRow">

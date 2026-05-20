@@ -152,6 +152,8 @@ async function runEdit() {
   if (!prompt) return setStatus("prompt is empty", "err");
   if (state.mode === "inpaint" && !state.maskDirty) return setStatus("paint a mask first", "err");
 
+  const variantsCount = Math.max(1, Math.min(8, parseInt($("variants").value, 10) || 1));
+
   const fd = new FormData();
   fd.append("image", state.imageFile);
   fd.append("mode", state.mode);
@@ -161,56 +163,32 @@ async function runEdit() {
   if ($("seed").value) fd.append("seed", $("seed").value);
   fd.append("sharpen_level", $("sharpen").value);
   if ($("maxEdge").value) fd.append("max_edge", $("maxEdge").value);
-  // use_accel: send the checkbox state IF the toggle is visible (accel
-  // configured server-side). Otherwise omit — backend defaults to True
-  // which is a no-op when no LoRA is loaded.
   if (state.accelAvailable) {
     fd.append("use_accel", $("accelToggle").checked ? "true" : "false");
   }
+  fd.append("variants", String(variantsCount));
   if (state.mode === "inpaint") fd.append("mask", await maskBlob(), "mask.png");
 
   $("run").disabled = true;
   $("abort").classList.remove("hidden");
   state.userAborted = false;
-  setStatus("running…", "");
-  // Switch the idle poller to the active (faster) cadence for this job.
+  setStatus("submitting…", "");
   startProgressPoll(500);
   try {
-    const r = await fetch("/api/edit", { method: "POST", body: fd });
-    if (!r.ok) {
-      // 499 (NGINX): client closed request — we sent abort, expected case.
-      if (r.status === 499 || state.userAborted) {
-        setStatus("aborted", "err");
-        return;
-      }
-      throw new Error((await r.text()) || r.statusText);
-    }
-    const usedSeed = r.headers.get("X-Used-Seed");
-    const blob = await r.blob();
-    const url = URL.createObjectURL(blob);
-    $("result").src = url;
-    state.lastResultBlob = blob;
-    $("download").href = url;
-    // Reveal the side-by-side output panel (input is already in its half).
-    $("resultWrap").classList.remove("hidden");
-    $("resultActions").classList.remove("hidden");
-    if (usedSeed) {
-      // Pin the seed used by this run so the next click reuses it —
-      // gives free A/B testing at fixed seed when iterating on prompt.
-      // User can clear the field to randomize again.
-      $("seed").value = usedSeed;
-      setStatus(`done · seed ${usedSeed}`, "ok");
-    } else {
-      setStatus("done", "ok");
-    }
+    const r = await fetch("/api/tasks", { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    const task = await r.json();
+    state.currentTaskId = task.id;
+    setStatus(`task ${task.id.slice(0, 8)} queued (${variantsCount} variant${variantsCount > 1 ? "s" : ""})`, "");
+    const final = await pollTask(task.id);
+    if (final === null) return; // user aborted; status set elsewhere
+    renderTaskResult(final);
     addHistoryEntry({
-      resultBlob: blob,
+      taskId: final.id,
       inputFile: state.imageFile,
       prompt,
-      seed: usedSeed,
       mode: state.mode,
-      steps: $("steps").value,
-      guidance: $("guidance").value,
+      variants: final.variants,
       useAccel: state.accelAvailable ? $("accelToggle").checked : null,
     });
   } catch (e) {
@@ -222,10 +200,109 @@ async function runEdit() {
   } finally {
     $("run").disabled = false;
     $("abort").classList.add("hidden");
-    // Drop back to the slow idle cadence; don't stop completely so GPU
-    // stats stay live while the user inspects the result.
+    state.currentTaskId = null;
     startProgressPoll(2000);
   }
+}
+
+// Poll /api/tasks/:id until it reaches a terminal state (done/failed/aborted/approved).
+// Returns null if the user aborted; otherwise the final task envelope.
+async function pollTask(taskId) {
+  const TERMINAL = new Set(["done", "failed", "aborted", "approved"]);
+  while (true) {
+    if (state.userAborted) return null;
+    let r;
+    try {
+      r = await fetch(`/api/tasks/${taskId}`);
+    } catch {
+      // Transient network blip — retry next tick.
+      await new Promise((res) => setTimeout(res, 500));
+      continue;
+    }
+    if (!r.ok) throw new Error(`task fetch failed: ${r.status}`);
+    const task = await r.json();
+    const doneN = task.variants.filter((v) => v.status === "done").length;
+    setStatus(`task ${taskId.slice(0, 8)} · ${task.status} · ${doneN}/${task.variants.length} variants`, "");
+    if (TERMINAL.has(task.status)) return task;
+    await new Promise((res) => setTimeout(res, 500));
+  }
+}
+
+// Render the result panel for a task. Single variant → simple image;
+// multi-variant → clickable grid with approve flow.
+function renderTaskResult(task) {
+  const wrap = $("resultWrap");
+  wrap.innerHTML = "";
+  state.currentTask = task;
+
+  if (task.variants.length === 1) {
+    const v = task.variants[0];
+    if (v.status !== "done") {
+      const ph = document.createElement("div");
+      ph.className = "vplaceholder";
+      ph.textContent = v.status + (v.error ? `: ${v.error}` : "");
+      wrap.appendChild(ph);
+    } else {
+      const img = document.createElement("img");
+      img.id = "result";
+      img.src = v.output_url;
+      wrap.appendChild(img);
+      state.lastResultUrl = v.output_url;
+      state.lastVariantId = v.id;
+      $("seed").value = v.seed;
+      $("download").href = v.output_url;
+      setStatus(`done · seed ${v.seed}`, "ok");
+    }
+  } else {
+    const grid = document.createElement("div");
+    const cols = task.variants.length <= 4 ? 2 : task.variants.length <= 9 ? 3 : 4;
+    grid.className = `variants-grid cols-${cols}`;
+    task.variants.forEach((v) => {
+      const cell = document.createElement("div");
+      cell.className = "variant-cell";
+      if (v.approved) cell.classList.add("approved");
+      if (v.status === "done") {
+        cell.innerHTML = `
+          <img src="${v.output_url}" alt="" />
+          <div class="vmeta"><span>seed ${v.seed}</span><span>${(v.runtime_ms || 0) / 1000 | 0}s</span></div>`;
+        cell.addEventListener("click", () => selectVariant(task.id, v));
+      } else {
+        const ph = document.createElement("div");
+        ph.className = "vplaceholder";
+        ph.textContent = v.status;
+        cell.appendChild(ph);
+      }
+      grid.appendChild(cell);
+    });
+    wrap.appendChild(grid);
+    setStatus(`${task.variants.length} variants — click one to approve`, "");
+  }
+
+  wrap.classList.remove("hidden");
+  $("resultActions").classList.remove("hidden");
+}
+
+// Approve a variant, mark it as the "winner" for chaining/download.
+async function selectVariant(taskId, variant) {
+  setStatus(`approving variant ${variant.seed}…`, "");
+  let r;
+  try {
+    r = await fetch(`/api/tasks/${taskId}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ variant_id: variant.id }),
+    });
+  } catch (e) {
+    return setStatus("approve failed: " + e.message, "err");
+  }
+  if (!r.ok) return setStatus(`approve failed: ${r.status}`, "err");
+  const updated = await r.json();
+  state.lastResultUrl = variant.output_url;
+  state.lastVariantId = variant.id;
+  $("seed").value = variant.seed;
+  $("download").href = variant.output_url;
+  renderTaskResult(updated);
+  setStatus(`approved · seed ${variant.seed}`, "ok");
 }
 
 // --- abort --------------------------------------------------------------
@@ -264,26 +341,36 @@ $("refresh").addEventListener("click", () => {
   maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
   imgCanvas.width = maskCanvas.width = 0;
   imgCanvas.height = maskCanvas.height = 0;
-  $("result").removeAttribute("src");
+  $("resultWrap").innerHTML = "";
   $("resultWrap").classList.add("hidden");
   $("resultActions").classList.add("hidden");
   state.lastResultBlob = null;
+  state.lastResultUrl = null;
+  state.lastVariantId = null;
+  state.currentTask = null;
   setStatus("", "");
 });
 
 // --- history: ring buffer of last HISTORY_MAX successful edits ---------
 function addHistoryEntry(entry) {
-  const id = Date.now();
-  const resultUrl = URL.createObjectURL(entry.resultBlob);
-  // Store a thumbnail-ish version by reusing the full blob URL — small
-  // enough for in-memory storage of ~20 entries, and lets us treat the
-  // history thumb as the canonical reference if user wants to re-load it.
-  const item = { id, resultUrl, ...entry };
+  // Pick the approved variant if there is one; otherwise the first 'done'.
+  const winner =
+    (entry.variants || []).find((v) => v.approved) ||
+    (entry.variants || []).find((v) => v.status === "done");
+  if (!winner || !winner.output_url) return;
+
+  const item = {
+    id: entry.taskId || Date.now(),
+    resultUrl: winner.output_url, // persistent server URL
+    seed: winner.seed,
+    prompt: entry.prompt,
+    mode: entry.mode,
+    steps: $("steps").value,
+    guidance: $("guidance").value,
+    useAccel: entry.useAccel,
+  };
   history.unshift(item);
-  while (history.length > HISTORY_MAX) {
-    const dropped = history.pop();
-    URL.revokeObjectURL(dropped.resultUrl);
-  }
+  while (history.length > HISTORY_MAX) history.pop();
   renderHistory();
 }
 
@@ -310,60 +397,76 @@ function renderHistory() {
   }
 }
 
-function loadHistoryEntry(item) {
-  // Re-wrap the stored result blob as a fresh File and feed it through
-  // the canonical upload pipeline — exactly the same path as "use as
-  // input" but from arbitrary history depth.
-  const file = new File([item.resultBlob], `history-${item.id}.png`, { type: "image/png" });
+async function loadHistoryEntry(item) {
+  // Fetch the server URL as a blob, wrap as File, feed loadFile().
+  let blob;
+  try {
+    const r = await fetch(item.resultUrl);
+    if (!r.ok) throw new Error(`${r.status}`);
+    blob = await r.blob();
+  } catch (e) {
+    return setStatus("history fetch failed: " + e.message, "err");
+  }
+  const file = new File([blob], `history-${item.id}.png`, { type: "image/png" });
   loadFile(file);
   $("prompt").value = item.prompt || "";
   $("seed").value = item.seed || "";
-  if (item.mode === "kontext" || item.mode === "inpaint") {
-    document.querySelectorAll(".seg-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === item.mode));
+  if (item.mode === "kontext" || item.mode === "inpaint" || item.mode === "qwen") {
+    document.querySelectorAll(".seg-btn").forEach((b) =>
+      b.classList.toggle("active", b.dataset.mode === item.mode),
+    );
     state.mode = item.mode;
     $("brushRow").classList.toggle("hidden", item.mode !== "inpaint");
     maskCanvas.style.pointerEvents = item.mode === "inpaint" ? "auto" : "none";
   }
   if (item.steps) $("steps").value = item.steps;
   if (item.guidance) $("guidance").value = item.guidance;
-  if (state.accelAvailable && item.useAccel !== null) {
+  if (state.accelAvailable && item.useAccel !== null && item.useAccel !== undefined) {
     $("accelToggle").checked = item.useAccel;
   }
-  // Drop the displayed result so it's clear the next edit starts fresh.
-  $("result").removeAttribute("src");
+  $("resultWrap").innerHTML = "";
   $("resultWrap").classList.add("hidden");
   $("resultActions").classList.add("hidden");
+  state.lastResultUrl = null;
+  state.lastVariantId = null;
   setStatus(`loaded · seed ${item.seed}`, "ok");
 }
 
 $("historyClear").addEventListener("click", () => {
-  for (const item of history) URL.revokeObjectURL(item.resultUrl);
+  // Server-side URLs (no blob URLs to revoke now); just drop the in-memory list.
   history.length = 0;
   renderHistory();
 });
 
 // --- chain: use current result as the next input -----------------------
-$("useAsInput").addEventListener("click", () => {
-  const blob = state.lastResultBlob;
-  if (!blob) return setStatus("no result to chain yet", "err");
+$("useAsInput").addEventListener("click", async () => {
+  const url = state.lastResultUrl;
+  if (!url) return setStatus("no result to chain yet", "err");
 
-  // Wrap the blob as a File so the existing upload pipeline (loadFile)
-  // can ingest it identically to a fresh user upload.
+  // Fetch the variant PNG (server-side URL) and wrap as a File so the
+  // existing upload pipeline (loadFile) ingests it identically.
+  let blob;
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`${r.status}`);
+    blob = await r.blob();
+  } catch (e) {
+    return setStatus("chain fetch failed: " + e.message, "err");
+  }
   const stamped = `chained-${Date.now()}.png`;
   const file = new File([blob], stamped, { type: "image/png" });
 
   loadFile(file);
   // Clear UI surface for the next instruction. Keep mode + steps +
-  // guidance untouched; clear prompt and seed because (a) the previous
-  // prompt likely doesn't make sense on the new image, (b) the same
-  // seed on a different input produces a different but pseudo-random
-  // result anyway — better to start fresh.
+  // guidance untouched; clear prompt and seed because the previous
+  // prompt likely doesn't apply to the new image.
   $("prompt").value = "";
   $("seed").value = "";
-  // Drop the displayed result — it's now the input.
-  $("result").removeAttribute("src");
+  $("resultWrap").innerHTML = "";
   $("resultWrap").classList.add("hidden");
   $("resultActions").classList.add("hidden");
+  state.lastResultUrl = null;
+  state.lastVariantId = null;
   setStatus("chained — write the next instruction", "ok");
 });
 
