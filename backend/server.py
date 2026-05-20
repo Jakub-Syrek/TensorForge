@@ -22,6 +22,7 @@ import io
 import os
 import random
 import sys
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -131,6 +132,18 @@ def abort() -> JSONResponse:
 
 class ApproveBody(BaseModel):
     variant_id: str
+
+
+class PipelineStep(BaseModel):
+    mode: str = "auto"
+    prompt: str
+    steps: int | None = None
+    guidance: float | None = None
+    use_accel: bool | None = None
+    sharpen_level: str | None = None
+    max_edge: int | None = None
+    gen_width: int | None = None
+    gen_height: int | None = None
 
 
 def _serialize_variant(v: Variant) -> dict:
@@ -313,6 +326,147 @@ def delete_task(task_id: str) -> JSONResponse:
         s.commit()
     storage.delete_task_dir(task_id)
     return JSONResponse({"deleted": task_id})
+
+
+@app.post("/api/pipelines")
+async def create_pipeline(
+    steps_json: str = Form(...),
+    image: UploadFile | None = File(None),
+    mask: UploadFile | None = File(None),
+) -> JSONResponse:
+    """Create a multi-step pipeline. Steps run sequentially: each step's
+    output (its first 'done' variant) becomes the next step's input.
+
+    Form field `steps_json` is a JSON-encoded list of PipelineStep objects
+    (1 to 10). Per-step params override defaults from the first step.
+    The optional `image` is the initial input to step 0 (omit for a
+    'generate-first' chain); `mask` applies only if step 0 is 'inpaint'.
+    """
+    import json
+
+    try:
+        raw_steps = json.loads(steps_json)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(400, f"steps_json must be valid JSON: {exc}") from exc
+    if not isinstance(raw_steps, list) or not (1 <= len(raw_steps) <= 10):
+        raise HTTPException(400, "steps must be a list of 1-10 step objects")
+
+    parsed_steps = []
+    for i, raw in enumerate(raw_steps):
+        try:
+            parsed_steps.append(PipelineStep(**raw))
+        except Exception as exc:
+            raise HTTPException(400, f"step {i}: {exc}") from exc
+        if not parsed_steps[-1].prompt.strip():
+            raise HTTPException(400, f"step {i}: prompt is empty")
+        if parsed_steps[-1].mode not in {"kontext", "inpaint", "qwen", "generate", "auto"}:
+            raise HTTPException(400, f"step {i}: invalid mode {parsed_steps[-1].mode!r}")
+
+    pipeline_id = uuid.uuid4().hex
+
+    # Persist initial image (if any) — step 0 picks it up.
+    img_bytes = await image.read() if image is not None else None
+    mask_bytes = await mask.read() if mask is not None else None
+    original_w = original_h = None
+    if img_bytes:
+        img = Image.open(io.BytesIO(img_bytes))
+        img = ImageOps.exif_transpose(img)
+        original_w, original_h = img.size
+
+    created_tasks: list[Task] = []
+    with get_session() as s:
+        for i, step in enumerate(parsed_steps):
+            # Resolve auto -> concrete mode, considering whether THIS step
+            # has an effective image input. Step 0 uses the uploaded image;
+            # later steps will have a parent variant set by the worker, but
+            # at submission time we don't have that yet — treat them as
+            # having an image (the pipeline implicitly chains).
+            mode = step.mode
+            routing = None
+            if mode == "auto":
+                has_img = i > 0 or img_bytes is not None
+                routing = classify_intent(step.prompt, has_image=has_img)
+                mode = "kontext" if routing["intent"] == "edit" else "generate"
+
+            params = {
+                "steps": step.steps if step.steps is not None else 28,
+                "guidance": step.guidance if step.guidance is not None else 3.5,
+                "use_accel": step.use_accel if step.use_accel is not None else True,
+                "sharpen_level": step.sharpen_level or "off",
+                "max_edge": step.max_edge if step.max_edge is not None else MAX_EDGE,
+                "gen_width": step.gen_width if step.gen_width is not None else 1024,
+                "gen_height": step.gen_height if step.gen_height is not None else 1024,
+                "routing": routing,
+            }
+            t = Task(
+                mode=mode,
+                prompt=step.prompt,
+                input_path=None,
+                original_width=original_w if i == 0 else None,
+                original_height=original_h if i == 0 else None,
+                variants_requested=1,  # pipeline: single-track
+                params=params,
+                status="queued" if i == 0 else "blocked",
+                pipeline_id=pipeline_id,
+                pipeline_step=i,
+            )
+            s.add(t)
+            s.flush()  # need t.id for storage paths
+            created_tasks.append(t)
+
+            if i == 0 and img_bytes is not None:
+                t.input_path = str(storage.save_input(t.id, img_bytes))
+            if i == 0 and mode == "inpaint" and mask_bytes is not None:
+                t.mask_path = str(storage.save_mask(t.id, mask_bytes))
+
+            # Single variant per step (pipeline is sequential, no branching).
+            s.add(
+                Variant(
+                    task_id=t.id,
+                    seed=random.randint(0, 2**31 - 1),
+                    status="queued" if i == 0 else "blocked",
+                )
+            )
+
+        s.commit()
+        for t in created_tasks:
+            s.refresh(t)
+        return JSONResponse(
+            {
+                "pipeline_id": pipeline_id,
+                "steps": [_serialize_task(t) for t in created_tasks],
+            },
+            status_code=202,
+        )
+
+
+@app.get("/api/pipelines/{pipeline_id}")
+def get_pipeline(pipeline_id: str) -> JSONResponse:
+    with get_session() as s:
+        rows = (
+            s.query(Task)
+            .filter(Task.pipeline_id == pipeline_id)
+            .order_by(Task.pipeline_step.asc())
+            .all()
+        )
+        if not rows:
+            raise HTTPException(404, "pipeline not found")
+        statuses = {t.status for t in rows}
+        if statuses == {"done"} or statuses == {"approved"} or statuses == {"done", "approved"}:
+            agg = "done"
+        elif "failed" in statuses:
+            agg = "failed"
+        elif "running" in statuses or "queued" in statuses:
+            agg = "running"
+        else:
+            agg = "blocked"
+        return JSONResponse(
+            {
+                "pipeline_id": pipeline_id,
+                "status": agg,
+                "steps": [_serialize_task(t) for t in rows],
+            }
+        )
 
 
 @app.get("/api/variants/{variant_id}/output")

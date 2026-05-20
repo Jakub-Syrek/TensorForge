@@ -52,6 +52,15 @@ class Task(Base):
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
 
+    # Pipeline / DAG support. A pipeline is N Task rows sharing a pipeline_id,
+    # ordered by pipeline_step. Step 0 has its input_path set from the upload;
+    # steps 1..N-1 start with status='blocked' and input_path=NULL — the worker
+    # fills parent_variant_id from the previous step's first done variant on
+    # completion, flips status to 'queued', and the next iteration picks up.
+    pipeline_id = Column(String(32), nullable=True, index=True)
+    pipeline_step = Column(Integer, nullable=True)
+    parent_variant_id = Column(String(32), nullable=True)
+
     variants = relationship(
         "Variant",
         back_populates="task",

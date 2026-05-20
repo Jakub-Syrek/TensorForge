@@ -144,6 +144,84 @@ class TaskWorker:
             t.status = "failed"
         t.finished_at = datetime.utcnow()
 
+        # If this task is part of a pipeline AND it succeeded, unblock the
+        # next step by wiring its parent_variant_id to one of our done
+        # variants and flipping its status to 'queued'.
+        if t.status == "done" and t.pipeline_id is not None:
+            self._maybe_advance_pipeline(s, t)
+        # Failure / abort in a pipeline propagates: mark all downstream
+        # blocked steps as 'aborted' so the UI can show the chain stopped.
+        elif t.status in ("failed", "aborted") and t.pipeline_id is not None:
+            downstream = (
+                s.query(Task)
+                .filter(
+                    Task.pipeline_id == t.pipeline_id,
+                    Task.pipeline_step > (t.pipeline_step or 0),
+                    Task.status == "blocked",
+                )
+                .all()
+            )
+            for d in downstream:
+                d.status = "aborted"
+                d.error = f"upstream step {t.pipeline_step} {t.status}"
+                d.finished_at = datetime.utcnow()
+                for dv in d.variants:
+                    if dv.status == "blocked":
+                        dv.status = "aborted"
+
+    def _resolve_input_path(self, t: Task) -> str | None:
+        """Where does this task's input image live? Pipeline mid-steps point
+        at a previous variant's output via parent_variant_id; everything
+        else uses input_path from the upload."""
+        if t.parent_variant_id is None:
+            return t.input_path
+        # Lazy lookup so we don't widen the worker's session boundary —
+        # the variant might not be eagerly loaded.
+        from backend.db import SessionLocal
+
+        with SessionLocal() as s:
+            parent = s.get(Variant, t.parent_variant_id)
+            if parent is None:
+                return None
+            return parent.output_path
+
+    def _maybe_advance_pipeline(self, s, t: Task) -> None:
+        """Find the next step in this pipeline and unblock it.
+
+        Picks the first 'done' variant of the just-finished task as the
+        source for the next step's input. If multiple variants succeeded
+        we ignore the rest — pipeline mode is single-track by design;
+        users who want variant-pick branching submit one task at a time.
+        """
+        next_step = t.pipeline_step + 1 if t.pipeline_step is not None else None
+        if next_step is None:
+            return
+        nxt = (
+            s.query(Task)
+            .filter(
+                Task.pipeline_id == t.pipeline_id,
+                Task.pipeline_step == next_step,
+                Task.status == "blocked",
+            )
+            .first()
+        )
+        if nxt is None:
+            return
+        # Source variant — first one that finished cleanly.
+        source = next((v for v in t.variants if v.status == "done"), None)
+        if source is None or source.output_path is None:
+            # No usable output; leave the next step blocked. The pipeline
+            # effectively stalls — a future user action (delete/retry)
+            # handles it.
+            return
+        nxt.parent_variant_id = source.id
+        nxt.status = "queued"
+        # The single variant of the next step is also 'blocked' at submission
+        # time — flip it to 'queued' so _claim_next_variant picks it up.
+        for nv in nxt.variants:
+            if nv.status == "blocked":
+                nv.status = "queued"
+
     def _render(self, t: Task, v: Variant) -> bytes:  # pragma: no cover — GPU inference path
         params = t.params or {}
         max_edge = int(params.get("max_edge", 1024))
@@ -154,12 +232,22 @@ class TaskWorker:
         gen_width = int(params.get("gen_width", 1024))
         gen_height = int(params.get("gen_height", 1024))
 
+        # Resolve input: prefer parent_variant_id (pipeline mid-step) over
+        # input_path (initial upload). Mid-pipeline tasks have input_path=NULL
+        # because their input is the previous step's output.
+        input_source_path = self._resolve_input_path(t)
+
         img = None
         original_size = None
-        if t.mode != "generate" and t.input_path:
-            img = Image.open(t.input_path)
+        if t.mode != "generate" and input_source_path:
+            img = Image.open(input_source_path)
             img = ImageOps.exif_transpose(img)
-            original_size = (t.original_width, t.original_height)
+            # If we got the input from a parent variant, use the variant's
+            # dimensions (which already match the previous step's input).
+            if t.original_width and t.original_height:
+                original_size = (t.original_width, t.original_height)
+            else:
+                original_size = img.size
             if t.mode in ("kontext", "inpaint"):
                 img = fit_to_flux_bucket(img, max_edge)
             else:
