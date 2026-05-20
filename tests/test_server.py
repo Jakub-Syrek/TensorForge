@@ -112,6 +112,20 @@ def test_edit_rejects_unknown_mode(client, stub_editor):
     assert r.status_code == 400
 
 
+def test_edit_accepts_sharpen_level(client, stub_editor):
+    """sharpen_level is an optional form field; defaults to 'off'. The
+    transformation happens server-side after LANCZOS, so we just verify
+    the endpoint accepts the parameter without breaking. Actual pixel-
+    level behavior is covered by test_imgutils tests."""
+    for level in ("off", "light", "medium", "strong", "garbage"):
+        r = client.post(
+            "/api/edit",
+            data={"mode": "kontext", "prompt": "x", "steps": "1", "sharpen_level": level},
+            files={"image": ("in.png", _png_bytes(), "image/png")},
+        )
+        assert r.status_code == 200, f"level={level!r}: {r.text}"
+
+
 def test_edit_qwen_mode_accepted(client, stub_editor):
     """Qwen-Image-Edit dispatches through the same endpoint as Kontext —
     only the mode flag differs. The stub editor returns a green PNG; that's

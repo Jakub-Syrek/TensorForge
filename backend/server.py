@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.imgutils import fit_long_edge, image_to_png_bytes
+from backend.imgutils import fit_long_edge, image_to_png_bytes, sharpen
 from backend.pipeline import QUANT_MODE, EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress, query_gpu_stats
 
@@ -107,6 +107,7 @@ async def edit(
     guidance: float = Form(3.5),
     seed: int | None = Form(None),
     use_accel: bool = Form(True),
+    sharpen_level: str = Form("off"),
 ) -> Response:
     if mode not in {"kontext", "inpaint", "qwen"}:
         raise HTTPException(400, f"mode must be 'kontext', 'inpaint', or 'qwen', got {mode!r}")
@@ -163,6 +164,10 @@ async def edit(
     # 1024-px output, but matches user expectations.
     if out.size != original_size:
         out = out.resize(original_size, Image.Resampling.LANCZOS)
+
+    # Optional post-processing sharpen — runs AFTER the LANCZOS upscale,
+    # since that's the step that introduced the softness we're undoing.
+    out = sharpen(out, sharpen_level)  # type: ignore[arg-type]
 
     return Response(
         content=image_to_png_bytes(out),

@@ -2,7 +2,7 @@ from io import BytesIO
 
 from PIL import Image
 
-from backend.imgutils import ensure_l, ensure_rgb, fit_long_edge, image_to_png_bytes
+from backend.imgutils import ensure_l, ensure_rgb, fit_long_edge, image_to_png_bytes, sharpen
 
 
 def test_ensure_rgb_passthrough():
@@ -59,6 +59,33 @@ def test_fit_long_edge_rounds_to_multiple_of_16():
     w, h = out.size
     assert w % 16 == 0 and h % 16 == 0
     assert max(w, h) <= 1000  # never exceed the cap
+
+
+def test_sharpen_off_returns_same_instance():
+    img = Image.new("RGB", (64, 64), color=(128, 128, 128))
+    assert sharpen(img, "off") is img
+
+
+def test_sharpen_unknown_level_is_noop():
+    """Unknown levels are treated as 'off' — defensive, since the form-field
+    value reaches us as an arbitrary string."""
+    img = Image.new("RGB", (64, 64), color=(128, 128, 128))
+    assert sharpen(img, "extreme") is img
+
+
+def test_sharpen_light_modifies_image_on_edge_content():
+    """UnsharpMask enhances mid-tone edges; 0/255 binary edges are already
+    saturated and have no headroom to amplify. Use a grey-to-grey edge so
+    we can detect the filter actually ran."""
+    img = Image.new("RGB", (64, 64), color=(100, 100, 100))
+    # paste a slightly brighter grey to create a soft edge with headroom
+    img.paste(Image.new("RGB", (32, 32), color=(160, 160, 160)), (16, 16))
+
+    out = sharpen(img, "light")
+    assert out is not img
+    assert out.size == img.size
+    # Tobytes() comparison: same content -> same bytes, modified -> different.
+    assert img.tobytes() != out.tobytes()
 
 
 def test_image_to_png_bytes_roundtrip():

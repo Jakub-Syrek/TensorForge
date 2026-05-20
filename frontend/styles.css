@@ -68,7 +68,7 @@ main {
 .row.mode-row, .row.brush-row, .row.params { flex-direction: row; align-items: center; gap: 10px; }
 .row.params label { display: flex; flex-direction: column; gap: 4px; flex: 1; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
 
-input[type="number"], input[type="range"], textarea {
+input[type="number"], input[type="range"], textarea, select {
   background: var(--panel-2);
   color: var(--fg);
   border: 1px solid var(--border);
@@ -77,6 +77,17 @@ input[type="number"], input[type="range"], textarea {
   font-family: var(--mono);
   font-size: 13px;
   outline: none;
+}
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 28px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
 }
 input:focus, textarea:focus { border-color: var(--accent); }
 textarea { min-height: 110px; resize: vertical; }

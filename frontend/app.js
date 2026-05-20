@@ -147,6 +147,7 @@ async function runEdit() {
   fd.append("steps", $("steps").value);
   fd.append("guidance", $("guidance").value);
   if ($("seed").value) fd.append("seed", $("seed").value);
+  fd.append("sharpen_level", $("sharpen").value);
   // use_accel: send the checkbox state IF the toggle is visible (accel
   // configured server-side). Otherwise omit — backend defaults to True
   // which is a no-op when no LoRA is loaded.
