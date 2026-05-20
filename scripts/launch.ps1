@@ -59,7 +59,11 @@ param(
     [switch]$Help
 )
 
-$ErrorActionPreference = 'Stop'
+# Don't set $ErrorActionPreference = 'Stop' globally — when we run the
+# Python server via '&', uvicorn's INFO logs hit stderr, and PS 5.1 wraps
+# every stderr line in a NativeCommandError record. With Stop, that
+# terminates the whole script the moment the server starts logging. We
+# use explicit `exit N` for our own error paths instead.
 
 # Resolve repo paths from the script location, so the launcher works from
 # any cwd. scripts/launch.ps1 -> repo root is one level up.
