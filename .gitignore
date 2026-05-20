@@ -27,6 +27,13 @@ outputs/
 results/
 *.png.tmp
 
+# Task persistence (SQLite DB + uploaded/generated files)
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
 # IDE
 .idea/
 .vscode/

@@ -15,6 +15,11 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.12
 
+# Task persistence: SQLite via SQLAlchemy. Single-file DB, no server, no
+# extra process. Wired to a single background worker thread (see backend/
+# queue.py) — appropriate for a single-machine deployment with one GPU.
+sqlalchemy>=2.0
+
 # Optional 4-bit quantization (enabled via FLUX_QUANT=4bit env var).
 # Drops Flux Kontext/Fill transformer from ~12 GB to ~3.5 GB and T5-XXL
 # from ~9 GB to ~3 GB so the whole pipeline fits in 16 GB VRAM without
