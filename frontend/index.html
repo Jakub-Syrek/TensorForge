@@ -26,9 +26,11 @@
 
       <div class="row mode-row">
         <div class="seg">
-          <button type="button" data-mode="kontext" class="seg-btn active" title="FLUX.1 Kontext-dev — instruction edit, preserves composition">Kontext</button>
+          <button type="button" data-mode="auto" class="seg-btn active" title="Auto: routes to Kontext (edit) or Schnell (generate) based on the first word of the prompt and whether an image is uploaded">auto</button>
+          <button type="button" data-mode="kontext" class="seg-btn" title="FLUX.1 Kontext-dev — instruction edit, preserves composition">Kontext</button>
           <button type="button" data-mode="inpaint" class="seg-btn" title="FLUX.1 Fill-dev — regenerates the masked region only">inpaint</button>
           <button type="button" data-mode="qwen" class="seg-btn" title="Qwen-Image-Edit — alternative instruction edit (Qwen2-VL text encoder, ~50 steps default)">Qwen edit</button>
+          <button type="button" data-mode="generate" class="seg-btn" title="FLUX.1 schnell — 4-step text-to-image, no input image needed">generate</button>
         </div>
       </div>
 

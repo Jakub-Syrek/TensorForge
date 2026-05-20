@@ -41,6 +41,7 @@ if str(REPO_ROOT) not in sys.path:
 from backend import storage
 from backend.db import Task, Variant, get_session, init_db
 from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_bytes, sharpen
+from backend.intent import explain as classify_intent
 from backend.pipeline import QUANT_MODE, EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress, query_gpu_stats
 from backend.worker import TaskWorker
@@ -165,9 +166,9 @@ def _serialize_task(t: Task) -> dict:
 
 @app.post("/api/tasks")
 async def create_task(
-    image: UploadFile = File(...),
     mode: str = Form(...),
     prompt: str = Form(...),
+    image: UploadFile | None = File(None),
     mask: UploadFile | None = File(None),
     steps: int = Form(28),
     guidance: float = Form(3.5),
@@ -176,25 +177,50 @@ async def create_task(
     sharpen_level: str = Form("off"),
     max_edge: int | None = Form(None),
     variants: int = Form(1),
+    gen_width: int = Form(1024),
+    gen_height: int = Form(1024),
 ) -> JSONResponse:
-    """Enqueue an edit. Returns task id and initial state; the worker
-    pulls it asynchronously. Poll GET /api/tasks/{id} for status, or wait
-    on the variant output URL once status === 'done'."""
-    if mode not in {"kontext", "inpaint", "qwen"}:
-        raise HTTPException(400, f"mode must be 'kontext', 'inpaint', or 'qwen', got {mode!r}")
+    """Enqueue an edit/generate task. Returns task id and initial state.
+
+    mode values:
+      - 'kontext'/'inpaint'/'qwen': image-conditioned edit
+      - 'generate': text-to-image (no input image needed)
+      - 'auto': server picks 'kontext' or 'generate' from prompt keywords
+    """
+    if mode not in {"kontext", "inpaint", "qwen", "generate", "auto"}:
+        raise HTTPException(
+            400,
+            f"mode must be 'kontext', 'inpaint', 'qwen', 'generate', or 'auto', got {mode!r}",
+        )
     if not prompt.strip():
         raise HTTPException(400, "prompt is empty")
     if mode == "inpaint" and mask is None:
         raise HTTPException(400, "inpaint requires a mask")
-    variants_n = max(1, min(8, int(variants)))
 
+    # Resolve 'auto' -> concrete mode based on prompt keywords + image presence.
+    routing = None
+    if mode == "auto":
+        routing = classify_intent(prompt, has_image=image is not None)
+        mode = "kontext" if routing["intent"] == "edit" else "generate"
+
+    if mode != "generate" and image is None:
+        raise HTTPException(400, f"mode {mode!r} requires an input image")
+
+    variants_n = max(1, min(8, int(variants)))
     effective_max_edge = MAX_EDGE if max_edge is None else max(64, min(2048, int(max_edge)))
 
-    # Read once so we can persist + read the size before queuing.
-    img_bytes = await image.read()
-    img = Image.open(io.BytesIO(img_bytes))
-    img = ImageOps.exif_transpose(img)
-    original_w, original_h = img.size
+    # Image is optional for generate; load + persist if present.
+    img_bytes = None
+    original_w = original_h = None
+    if image is not None:
+        img_bytes = await image.read()
+        img = Image.open(io.BytesIO(img_bytes))
+        img = ImageOps.exif_transpose(img)
+        original_w, original_h = img.size
+
+    # Generate width/height clamped to /16 and a sane range.
+    gen_w = max(256, min(2048, (int(gen_width) // 16) * 16))
+    gen_h = max(256, min(2048, (int(gen_height) // 16) * 16))
 
     base_seed = random.randint(0, 2**31 - 1) if seed in (None, "") else int(seed)
     seeds = [base_seed if i == 0 else random.randint(0, 2**31 - 1) for i in range(variants_n)]
@@ -203,7 +229,7 @@ async def create_task(
         t = Task(
             mode=mode,
             prompt=prompt,
-            input_path="",
+            input_path=None,
             original_width=original_w,
             original_height=original_h,
             variants_requested=variants_n,
@@ -214,14 +240,18 @@ async def create_task(
                 "sharpen_level": sharpen_level,
                 "max_edge": effective_max_edge,
                 "base_seed": base_seed,
+                "gen_width": gen_w,
+                "gen_height": gen_h,
+                "routing": routing,  # null unless mode was 'auto'
             },
         )
         s.add(t)
         s.flush()  # need t.id for storage paths
 
-        input_path = storage.save_input(t.id, img_bytes)
-        t.input_path = str(input_path)
-        if mode == "inpaint":
+        if img_bytes is not None:
+            input_path = storage.save_input(t.id, img_bytes)
+            t.input_path = str(input_path)
+        if mode == "inpaint" and mask is not None:
             mask_bytes = await mask.read()
             t.mask_path = str(storage.save_mask(t.id, mask_bytes))
 

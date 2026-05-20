@@ -36,9 +36,10 @@ def _read_quant_mode() -> str | None:
 
 QUANT_MODE: str | None = _read_quant_mode()
 
-Mode = Literal["kontext", "inpaint", "qwen"]
+Mode = Literal["kontext", "inpaint", "qwen", "generate"]
 
 QWEN_EDIT_MODEL = "Qwen/Qwen-Image-Edit"
+SCHNELL_MODEL = "black-forest-labs/FLUX.1-schnell"
 
 
 class EditAborted(RuntimeError):
@@ -77,11 +78,15 @@ class AccelConfig:
 class EditRequest:
     mode: Mode
     prompt: str
-    image: Image.Image
-    mask: Image.Image | None = None  # required for inpaint, ignored for kontext
+    image: Image.Image | None = None  # None for generate mode (text-to-image)
+    mask: Image.Image | None = None  # required for inpaint, ignored otherwise
     steps: int = 28
     guidance: float = 3.5
     seed: int | None = None
+    # Output dimensions for generate mode; ignored for image-conditioned modes
+    # (those derive size from the input image).
+    width: int = 1024
+    height: int = 1024
     # When True and an accel LoRA is configured, enable the adapter for this
     # edit; when False, disable it (lets the UI flip between fast 8-step
     # and full 28-step quality without reloading the pipeline).
@@ -95,6 +100,7 @@ class FluxEditor:
         self._kontext = None
         self._fill = None
         self._qwen = None
+        self._schnell = None
         self._dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
         self.accel = accel if accel is not None else AccelConfig.from_env()
 
@@ -111,6 +117,21 @@ class FluxEditor:
 
         pipe = self._from_pretrained(FluxFillPipeline, FILL_MODEL)
         self._apply_accel(pipe)
+        self._apply_memory_savers(pipe)
+        return pipe
+
+    def _load_schnell(self):  # pragma: no cover — requires GPU + ~13 GB model
+        """Load Flux schnell — 4-step distilled text-to-image generator.
+
+        Shares the Flux DiT transformer with Kontext/Fill, so our NF4 path
+        works here too: same FluxTransformer2DModel + T5EncoderModel pieces.
+        guidance_scale is unused (schnell was distilled with cfg baked in).
+        """
+        from diffusers import FluxPipeline
+
+        pipe = self._from_pretrained(FluxPipeline, SCHNELL_MODEL)
+        # No accel LoRA — schnell is already step-distilled to 4 steps;
+        # layering Hyper-SD on top would be redundant and probably degrade.
         self._apply_memory_savers(pipe)
         return pipe
 
@@ -242,6 +263,12 @@ class FluxEditor:
             self._qwen = self._load_qwen()
         return self._qwen
 
+    @property
+    def schnell(self):  # pragma: no cover — triggers _load_schnell (GPU)
+        if self._schnell is None:
+            self._schnell = self._load_schnell()
+        return self._schnell
+
     def _release_intermediate_memory(self) -> None:  # pragma: no cover — GPU only
         """Drop intermediate activation buffers held after the call returns.
 
@@ -259,7 +286,7 @@ class FluxEditor:
             device = "cuda" if torch.cuda.is_available() else "cpu"
             generator = torch.Generator(device=device).manual_seed(int(req.seed))
 
-        image = ensure_rgb(req.image)
+        image = ensure_rgb(req.image) if req.image is not None else None
 
         # diffusers calls this after each denoising step. We update the
         # shared progress state so /api/progress can report N/total live.
@@ -309,6 +336,24 @@ class FluxEditor:
                     image=image,
                     num_inference_steps=req.steps,
                     true_cfg_scale=req.guidance,
+                    generator=generator,
+                    callback_on_step_end=_on_step_end,
+                )
+                return result.images[0]
+
+            if req.mode == "generate":
+                # Flux schnell: 4-step distilled t2i. No input image. The
+                # accel LoRA toggle still applies if configured (rare but
+                # not harmful — Hyper-SD pushes schnell to ~1-2 steps).
+                self._set_accel_active(self.schnell, req.use_accel)
+                # schnell's guidance is baked in via distillation; passing
+                # guidance_scale=0 is the recommended sentinel.
+                result = self.schnell(
+                    prompt=req.prompt,
+                    height=req.height,
+                    width=req.width,
+                    num_inference_steps=req.steps,
+                    guidance_scale=0.0,
                     generator=generator,
                     callback_on_step_end=_on_step_end,
                 )

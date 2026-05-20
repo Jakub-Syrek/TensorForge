@@ -151,30 +151,38 @@ class TaskWorker:
         guidance = float(params.get("guidance", 3.5))
         use_accel = bool(params.get("use_accel", True))
         sharpen_level = params.get("sharpen_level", "off")
+        gen_width = int(params.get("gen_width", 1024))
+        gen_height = int(params.get("gen_height", 1024))
 
-        img = Image.open(t.input_path)
-        img = ImageOps.exif_transpose(img)
-        original_size = (t.original_width, t.original_height)
-
-        if t.mode in ("kontext", "inpaint"):
-            img = fit_to_flux_bucket(img, max_edge)
-        else:
-            img = fit_long_edge(img, max_edge)
+        img = None
+        original_size = None
+        if t.mode != "generate" and t.input_path:
+            img = Image.open(t.input_path)
+            img = ImageOps.exif_transpose(img)
+            original_size = (t.original_width, t.original_height)
+            if t.mode in ("kontext", "inpaint"):
+                img = fit_to_flux_bucket(img, max_edge)
+            else:
+                img = fit_long_edge(img, max_edge)
 
         mask = None
         if t.mode == "inpaint" and t.mask_path:
             mask = Image.open(t.mask_path)
 
-        job_progress.start(total=steps, mode=t.mode)
+        # Schnell defaults to 4 steps; anything else clamps to a sane floor.
+        run_steps = max(1, steps)
+        job_progress.start(total=run_steps, mode=t.mode)
         try:
             req = EditRequest(
                 mode=t.mode,
                 prompt=t.prompt,
                 image=img,
                 mask=mask,
-                steps=steps,
+                steps=run_steps,
                 guidance=guidance,
                 seed=v.seed,
+                width=gen_width,
+                height=gen_height,
                 use_accel=use_accel,
             )
             out = self.editor.edit(req)
@@ -186,7 +194,9 @@ class TaskWorker:
             job_progress.finish(error=str(exc))
             raise
 
-        if out.size != original_size:
+        # Generate has no original_size — the model output IS the final canvas.
+        # For edit modes, LANCZOS back to the user's upload dims.
+        if original_size is not None and out.size != original_size:
             out = out.resize(original_size, Image.Resampling.LANCZOS)
         out = sharpen(out, sharpen_level)
         return image_to_png_bytes(out)

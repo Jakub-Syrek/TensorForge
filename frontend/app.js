@@ -85,9 +85,11 @@ $("accelToggle").addEventListener("change", (e) => {
 // --- mode toggle ---------------------------------------------------------
 // Per-mode sensible defaults. User can override afterwards via the inputs.
 const MODE_DEFAULTS = {
-  kontext: { steps: 28, guidance: 3.5 },
-  inpaint: { steps: 28, guidance: 3.5 },
-  qwen:    { steps: 50, guidance: 4.0 }, // Qwen-Image-Edit native defaults
+  auto:     { steps: 28, guidance: 3.5 },   // matches kontext; generate path overridden server-side
+  kontext:  { steps: 28, guidance: 3.5 },
+  inpaint:  { steps: 28, guidance: 3.5 },
+  qwen:     { steps: 50, guidance: 4.0 },   // Qwen-Image-Edit native defaults
+  generate: { steps: 4,  guidance: 0.0 },   // Flux schnell — 4-step distilled, guidance baked in
 };
 
 document.querySelectorAll(".seg-btn").forEach(btn => {
@@ -147,15 +149,18 @@ function paintAt(p) {
 $("run").addEventListener("click", runEdit);
 
 async function runEdit() {
-  if (!state.imageFile) return setStatus("upload an image first", "err");
   const prompt = $("prompt").value.trim();
   if (!prompt) return setStatus("prompt is empty", "err");
+  // Image is required for every mode except generate; auto resolves
+  // server-side so we accept it even without an image.
+  const needsImage = !(state.mode === "generate" || (state.mode === "auto" && !state.imageFile));
+  if (needsImage && !state.imageFile) return setStatus("upload an image first", "err");
   if (state.mode === "inpaint" && !state.maskDirty) return setStatus("paint a mask first", "err");
 
   const variantsCount = Math.max(1, Math.min(8, parseInt($("variants").value, 10) || 1));
 
   const fd = new FormData();
-  fd.append("image", state.imageFile);
+  if (state.imageFile) fd.append("image", state.imageFile);
   fd.append("mode", state.mode);
   fd.append("prompt", prompt);
   fd.append("steps", $("steps").value);

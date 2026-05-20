@@ -153,6 +153,72 @@ def test_unknown_mode_rejected(client):
     assert r.status_code == 400
 
 
+def test_generate_mode_works_without_image(client):
+    r = client.post(
+        "/api/tasks",
+        data={"mode": "generate", "prompt": "a cat on a chair", "steps": "4"},
+    )
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["mode"] == "generate"
+    # original_size is null for generate (no input image dimensions to preserve).
+    assert body["original_size"] == [None, None]
+
+
+def test_generate_mode_can_still_attach_image_but_ignores_it(client):
+    """Generate accepts image upload (we don't error) but doesn't condition
+    on it — schnell is pure text-to-image."""
+    r = client.post(
+        "/api/tasks",
+        data={"mode": "generate", "prompt": "a cat", "steps": "4"},
+        files={"image": ("in.png", _png_bytes(), "image/png")},
+    )
+    assert r.status_code == 202
+    assert r.json()["mode"] == "generate"
+
+
+def test_auto_mode_resolves_to_kontext_for_edit_prompt(client):
+    r = client.post(
+        "/api/tasks",
+        data={"mode": "auto", "prompt": "remove the hat"},
+        files={"image": ("in.png", _png_bytes(), "image/png")},
+    )
+    assert r.status_code == 202
+    body = r.json()
+    assert body["mode"] == "kontext"
+    assert body["params"]["routing"]["intent"] == "edit"
+
+
+def test_auto_mode_resolves_to_generate_for_creation_prompt(client):
+    r = client.post(
+        "/api/tasks",
+        data={"mode": "auto", "prompt": "a cat sitting on a chair"},
+        files={"image": ("in.png", _png_bytes(), "image/png")},
+    )
+    assert r.status_code == 202
+    body = r.json()
+    assert body["mode"] == "generate"
+    assert body["params"]["routing"]["intent"] == "generate"
+
+
+def test_auto_no_image_goes_generate(client):
+    r = client.post(
+        "/api/tasks",
+        data={"mode": "auto", "prompt": "anything"},
+    )
+    assert r.status_code == 202
+    body = r.json()
+    assert body["mode"] == "generate"
+
+
+def test_non_generate_mode_without_image_400(client):
+    r = client.post(
+        "/api/tasks",
+        data={"mode": "kontext", "prompt": "remove the hat"},
+    )
+    assert r.status_code == 400
+
+
 def test_approve_done_variant(client, app_env):
     _srv, d, s = app_env
     # Create a task, then simulate the worker finishing one of its variants.
