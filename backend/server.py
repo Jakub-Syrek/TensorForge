@@ -19,7 +19,7 @@ import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from PIL import Image
+from PIL import Image, ImageOps
 
 # Allow `python backend/server.py` execution.
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -120,6 +120,13 @@ async def edit(
     effective_max_edge = MAX_EDGE if max_edge is None else max(64, min(2048, int(max_edge)))
 
     img = Image.open(io.BytesIO(await image.read()))
+    # Apply EXIF orientation to the actual pixels. Phone cameras store the
+    # sensor's raw landscape pixels and tag a 'rotate 90°' EXIF flag for
+    # portrait shots; PIL doesn't honor that flag on open, so without this
+    # the model sees the image sideways while the browser preview shows it
+    # upright. exif_transpose rewrites pixels + strips the flag — input and
+    # output orientations stay aligned with how the user sees them.
+    img = ImageOps.exif_transpose(img)
     original_size = img.size
     # Flux Kontext / Fill bucket aspect ratios internally during inference,
     # which side-crops content when the input doesn't land on a known bucket.
