@@ -191,11 +191,8 @@ async function runEdit() {
     $("result").src = url;
     state.lastResultBlob = blob;
     $("download").href = url;
-    // Compare slider: original is the input we just submitted, result is
-    // what came back. Both URLs displayed; the slider clips the result.
-    $("compareOriginal").src = URL.createObjectURL(state.imageFile);
-    $("compareWrap").classList.remove("hidden");
-    setCompareSplit(50);
+    // Reveal the side-by-side output panel (input is already in its half).
+    $("resultWrap").classList.remove("hidden");
     $("resultActions").classList.remove("hidden");
     if (usedSeed) {
       // Pin the seed used by this run so the next click reuses it —
@@ -268,35 +265,11 @@ $("refresh").addEventListener("click", () => {
   imgCanvas.width = maskCanvas.width = 0;
   imgCanvas.height = maskCanvas.height = 0;
   $("result").removeAttribute("src");
-  $("compareOriginal").removeAttribute("src");
-  $("compareWrap").classList.add("hidden");
+  $("resultWrap").classList.add("hidden");
   $("resultActions").classList.add("hidden");
   state.lastResultBlob = null;
   setStatus("", "");
 });
-
-// --- compare slider ----------------------------------------------------
-function setCompareSplit(percent) {
-  const clamped = Math.max(0, Math.min(100, percent));
-  document.querySelector(".compare-wrap").style.setProperty("--split", `${clamped}%`);
-}
-
-(function wireCompareDrag() {
-  const handle = $("compareHandle");
-  let dragging = false;
-  handle.addEventListener("pointerdown", (e) => {
-    dragging = true;
-    handle.setPointerCapture(e.pointerId);
-  });
-  handle.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    const wrap = document.querySelector(".compare-wrap");
-    const rect = wrap.getBoundingClientRect();
-    const pct = ((e.clientX - rect.left) / rect.width) * 100;
-    setCompareSplit(pct);
-  });
-  handle.addEventListener("pointerup", () => { dragging = false; });
-})();
 
 // --- history: ring buffer of last HISTORY_MAX successful edits ---------
 function addHistoryEntry(entry) {
@@ -358,8 +331,7 @@ function loadHistoryEntry(item) {
   }
   // Drop the displayed result so it's clear the next edit starts fresh.
   $("result").removeAttribute("src");
-  $("compareOriginal").removeAttribute("src");
-  $("compareWrap").classList.add("hidden");
+  $("resultWrap").classList.add("hidden");
   $("resultActions").classList.add("hidden");
   setStatus(`loaded · seed ${item.seed}`, "ok");
 }
@@ -390,8 +362,7 @@ $("useAsInput").addEventListener("click", () => {
   $("seed").value = "";
   // Drop the displayed result — it's now the input.
   $("result").removeAttribute("src");
-  $("compareOriginal").removeAttribute("src");
-  $("compareWrap").classList.add("hidden");
+  $("resultWrap").classList.add("hidden");
   $("resultActions").classList.add("hidden");
   setStatus("chained — write the next instruction", "ok");
 });

@@ -102,16 +102,16 @@
     </section>
 
     <section class="panel right">
-      <div class="canvas-wrap">
-        <canvas id="imgCanvas"></canvas>
-        <canvas id="maskCanvas"></canvas>
+      <div class="canvas-row">
+        <div class="canvas-wrap" id="inputWrap">
+          <canvas id="imgCanvas"></canvas>
+          <canvas id="maskCanvas"></canvas>
+        </div>
+        <div class="result-wrap hidden" id="resultWrap">
+          <img id="result" alt="" />
+        </div>
       </div>
       <div class="row result-row">
-        <div class="compare-wrap hidden" id="compareWrap">
-          <img id="compareOriginal" alt="" />
-          <img id="result" alt="" />
-          <div class="compare-handle" id="compareHandle" title="drag to compare before vs after"></div>
-        </div>
         <div class="result-actions hidden" id="resultActions">
           <a id="download" download="edit.png">download</a>
           <button id="useAsInput" class="secondary chain" type="button" title="make this result the new input for chained edits">use as input →</button>
