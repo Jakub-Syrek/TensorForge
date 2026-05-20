@@ -59,12 +59,26 @@ hf auth login
 
 ## Run
 
+Use the launcher script to pick a performance profile (recommended):
+
+```powershell
+scripts\launch.ps1                  # 'fast' profile (NF4, default)
+scripts\launch.ps1 -Profile hyper   # NF4 + Hyper-SD 8-step LoRA
+scripts\launch.ps1 -Profile quality # bf16, slow but maximum fidelity
+scripts\launch.ps1 -Help            # print the profile comparison table
+scripts\launch.ps1 -KillExisting    # take over port 8000 if a stale server
+                                    #   is still bound
+```
+
+Or call the server directly if you want to manage env vars yourself:
+
 ```powershell
 python backend\server.py
 ```
 
-Open <http://127.0.0.1:8000>. First request downloads model weights (~24 GB
-each) into the HF cache.
+Open <http://127.0.0.1:8000>. First request in each mode downloads the
+relevant model weights into the HF cache (Flux Kontext + Fill: ~33 GB
+each; Qwen-Image-Edit: ~20 GB).
 
 ## 4-bit quantization (recommended on 16 GB cards)
 
