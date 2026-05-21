@@ -54,6 +54,7 @@ from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_byt
 from backend.intent import explain as classify_intent
 from backend.pipeline import QUANT_MODE, EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress, query_gpu_stats
+from backend.upscale import Upscaler
 from backend.vision import VisionAnalyzer
 from backend.worker import TaskWorker
 
@@ -70,7 +71,10 @@ editor = FluxEditor()
 # Florence-2 vision backend — lazy-loaded on first /api/vision/* hit so
 # adding the import doesn't move 1.5 GB into VRAM at server startup.
 vision = VisionAnalyzer()
-task_worker = TaskWorker(editor, vision=vision)
+# Real-ESRGAN upscaler — lazy-loaded on first request that picks
+# ``upscale="real_esrgan_4x"``. ~67 MB weights, ~600 MB resident.
+upscaler = Upscaler()
+task_worker = TaskWorker(editor, vision=vision, upscaler=upscaler)
 
 
 @asynccontextmanager
@@ -277,6 +281,7 @@ class PipelineStep(BaseModel):
     gen_height: int | None = None
     style_lora: str | None = None
     style_lora_scale: float | None = None
+    upscale: str | None = None
 
 
 def _serialize_variant(v: Variant) -> dict:
@@ -327,6 +332,7 @@ async def create_task(
     gen_height: int = Form(1024),
     style_lora: str | None = Form(None),
     style_lora_scale: float = Form(1.0),
+    upscale: str = Form("lanczos"),
 ) -> JSONResponse:
     """Enqueue an edit/generate task. Returns task id and initial state.
 
@@ -356,6 +362,12 @@ async def create_task(
 
     variants_n = max(1, min(8, int(variants)))
     effective_max_edge = MAX_EDGE if max_edge is None else max(64, min(2048, int(max_edge)))
+
+    # Validate upscale mode against the supported set; silently fall back
+    # to the LANCZOS default for unknown strings so an old client doesn't
+    # 400 out on a typo.
+    if upscale not in {"lanczos", "real_esrgan_4x"}:
+        upscale = "lanczos"
 
     # Validate style LoRA id against the registry; ignore if not compatible
     # with the resolved mode so we don't poison Fill / Qwen runs.
@@ -414,6 +426,7 @@ async def create_task(
                 "routing": routing,  # null unless mode was 'auto'
                 "style_lora_id": resolved_style_id,
                 "style_lora_scale": clamped_style_scale,
+                "upscale": upscale,
             },
         )
         s.add(t)
@@ -569,6 +582,9 @@ async def create_pipeline(
                 else 1.0
             )
 
+            step_upscale = (
+                step.upscale if step.upscale in {"lanczos", "real_esrgan_4x"} else "lanczos"
+            )
             params = {
                 "steps": step.steps if step.steps is not None else 28,
                 "guidance": step.guidance if step.guidance is not None else 3.5,
@@ -580,6 +596,7 @@ async def create_pipeline(
                 "routing": routing,
                 "style_lora_id": step_style_id,
                 "style_lora_scale": step_style_scale,
+                "upscale": step_upscale,
             }
             t = Task(
                 mode=mode,

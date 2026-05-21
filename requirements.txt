@@ -35,3 +35,9 @@ peft>=0.13.0
 # trust_remote_code=True).
 einops>=0.8.0
 timm>=1.0.0
+
+# Real-ESRGAN learned upscaler (backend/upscale.py). spandrel parses the
+# .pth weights and instantiates the RRDBNet architecture without needing
+# basicsr — much lighter dep tree than xinntao's original realesrgan
+# package. Same loader ComfyUI uses for arbitrary super-res models.
+spandrel>=0.4.0
