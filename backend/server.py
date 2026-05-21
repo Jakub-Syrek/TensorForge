@@ -55,6 +55,7 @@ from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_byt
 from backend.intent import explain as classify_intent
 from backend.pipeline import QUANT_MODE, EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress, query_gpu_stats
+from backend.prompt_rewriter import PromptRewriter
 from backend.upscale import Upscaler
 from backend.vision import VisionAnalyzer
 from backend.worker import TaskWorker
@@ -79,6 +80,9 @@ upscaler = Upscaler()
 # BiRefNet-general weights are ~150 MB; runs on CPU via ONNX runtime
 # so it doesn't compete with FLUX for VRAM.
 bg_remover = BackgroundRemover()
+# Qwen2.5-1.5B-Instruct prompt rewriter — lazy-loaded on first
+# /api/prompt/expand hit. ~3 GB bf16; coexists with NF4 FLUX on 16 GB.
+prompt_rewriter = PromptRewriter()
 task_worker = TaskWorker(editor, vision=vision, upscaler=upscaler)
 
 
@@ -124,6 +128,32 @@ def health() -> JSONResponse:
         "max_edge": MAX_EDGE,
     }
     return JSONResponse(payload)
+
+
+@app.post("/api/prompt/expand")
+async def prompt_expand(
+    prompt: str = Form(...),
+    intent: str = Form("generate"),
+) -> JSONResponse:
+    """Expand a short user prompt into a verbose FLUX-style description.
+
+    intent='generate' (default): text-to-image rewrite — packs in
+        lighting, composition, lens cues, atmosphere.
+    intent='edit': Kontext-style rewrite — preserves the action verb,
+        adds visual specifics about how the edit should look.
+
+    First call downloads Qwen2.5-1.5B-Instruct (~3 GB) into the HF cache.
+    Subsequent calls run in ~0.5-2 s on a warm model.
+    """
+    if intent not in {"generate", "edit"}:
+        raise HTTPException(400, f"intent must be 'generate' or 'edit', got {intent!r}")
+    if not prompt.strip():
+        raise HTTPException(400, "prompt is empty")
+    try:
+        expanded = await asyncio.to_thread(prompt_rewriter.expand, prompt, intent)
+    except Exception as ex:
+        raise HTTPException(500, f"prompt expansion failed: {ex}") from ex
+    return JSONResponse({"original": prompt, "expanded": expanded, "intent": intent})
 
 
 @app.get("/api/loras")

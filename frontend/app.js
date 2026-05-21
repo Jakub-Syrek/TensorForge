@@ -245,6 +245,52 @@ async function runBgRemove() {
 }
 $("bgRemoveBtn").addEventListener("click", runBgRemove);
 
+// --- prompt expansion (Qwen2.5-1.5B) -----------------------------------
+// Replaces the textarea content with the LLM-rewritten version. The
+// intent is inferred from the current mode: 'edit' for kontext / inpaint
+// / qwen / auto-with-image, 'generate' otherwise. Result preserves
+// undo history in the textarea — Ctrl+Z brings the original back.
+async function runExpandPrompt() {
+  const ta = $("prompt");
+  const prompt = ta.value.trim();
+  if (!prompt) {
+    $("expandStatus").textContent = "type a prompt first";
+    return;
+  }
+  // Heuristic for intent: if the user is in an image-conditioned mode,
+  // treat as edit; otherwise treat as generate. Pipeline mode falls
+  // through as 'generate' since per-step intent isn't trivial to derive.
+  const intent = (state.mode === "kontext" || state.mode === "inpaint" || state.mode === "qwen"
+                  || (state.mode === "auto" && state.imageFile))
+    ? "edit" : "generate";
+  const btn = $("expandPromptBtn");
+  btn.disabled = true;
+  $("expandStatus").textContent = "expanding…";
+  $("expandStatus").classList.remove("err");
+  try {
+    const fd = new FormData();
+    fd.append("prompt", prompt);
+    fd.append("intent", intent);
+    const r = await fetch("/api/prompt/expand", { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    const data = await r.json();
+    // Use the input-event path so textarea's undo stack records the
+    // change — Ctrl+Z restores the original short prompt.
+    ta.focus();
+    ta.select();
+    document.execCommand && document.execCommand("insertText", false, data.expanded);
+    // Fallback for browsers that no-op execCommand: direct assignment.
+    if (ta.value === prompt) ta.value = data.expanded;
+    $("expandStatus").textContent = `expanded (${intent})`;
+  } catch (e) {
+    $("expandStatus").textContent = String(e.message || e);
+    $("expandStatus").classList.add("err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+$("expandPromptBtn").addEventListener("click", runExpandPrompt);
+
 function fitCanvases(w, h) {
   imgCanvas.width = maskCanvas.width = w;
   imgCanvas.height = maskCanvas.height = h;
