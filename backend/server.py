@@ -54,6 +54,7 @@ from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_byt
 from backend.intent import explain as classify_intent
 from backend.pipeline import QUANT_MODE, EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress, query_gpu_stats
+from backend.vision import VisionAnalyzer
 from backend.worker import TaskWorker
 
 # Cap on the longest edge of the input image. The right value depends on
@@ -67,6 +68,9 @@ MAX_EDGE = int(os.environ.get("FLUX_MAX_EDGE", "1024" if QUANT_MODE else "512"))
 
 editor = FluxEditor()
 task_worker = TaskWorker(editor)
+# Florence-2 vision backend — lazy-loaded on first /api/vision/* hit so
+# adding the import doesn't move 1.5 GB into VRAM at server startup.
+vision = VisionAnalyzer()
 
 
 @asynccontextmanager
@@ -118,6 +122,44 @@ def list_loras() -> JSONResponse:
     """List available style LoRAs for the UI dropdown. Static list — comes
     from ``backend.loras.STYLE_LORAS`` (built-ins + optional user JSON)."""
     return JSONResponse({"loras": loras.as_public_list()})
+
+
+@app.post("/api/vision/segment")
+async def vision_segment(
+    image: UploadFile = File(...),
+    text: str = Form(...),
+) -> Response:
+    """Referring expression segmentation via Florence-2.
+
+    Send an image + a phrase ("the dragon in the back", "the sky", "her
+    coat") — Florence-2 returns a single PNG mask at the image's native
+    resolution: white where the phrase grounds, black elsewhere.
+
+    This is the auto-mask path that feeds inpaint without manual brushing.
+    First call downloads ~1.5 GB of Florence-2 weights into HF cache; later
+    calls take ~100-300 ms depending on image size.
+    """
+    if not text.strip():
+        raise HTTPException(400, "text is empty")
+    img_bytes = await image.read()
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        img = ImageOps.exif_transpose(img)
+        img.load()
+    except (UnidentifiedImageError, OSError) as ex:
+        raise HTTPException(400, f"Could not decode image: {ex}") from ex
+    except Image.DecompressionBombError as ex:
+        raise HTTPException(413, f"Image too large: {ex}") from ex
+
+    try:
+        mask = await asyncio.to_thread(vision.segment, img, text)
+    except ValueError as ex:
+        raise HTTPException(400, str(ex)) from ex
+    except Exception as ex:
+        log_msg = f"vision.segment failed: {ex}"
+        raise HTTPException(500, log_msg) from ex
+
+    return Response(content=image_to_png_bytes(mask), media_type="image/png")
 
 
 @app.get("/api/progress")

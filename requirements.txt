@@ -25,3 +25,13 @@ sqlalchemy>=2.0
 # from ~9 GB to ~3 GB so the whole pipeline fits in 16 GB VRAM without
 # cpu_offload — eliminates PCIe thrashing on RTX 5080/16 GB.
 bitsandbytes>=0.49.0
+
+# Style LoRA loading via diffusers' multi-adapter API (see backend/loras.py).
+peft>=0.13.0
+
+# Florence-2 vision backend (backend/vision.py) for auto-masking, captions,
+# and object detection. einops + timm are runtime deps of the custom
+# modeling code that ships in the Florence-2 HF repo (loaded via
+# trust_remote_code=True).
+einops>=0.8.0
+timm>=1.0.0
