@@ -11,19 +11,24 @@ transformers 5.x:
     91 COCO classes (``facebook/detr-resnet-50`` · ~160 MB)
   - ``OWLv2`` for text-grounded detection — "find me the dragon"
     (``google/owlv2-base-patch16-ensemble`` · ~600 MB)
-  - ``BLIP-large`` for image captioning
-    (``Salesforce/blip-image-captioning-large`` · ~470 MB)
+  - ``BLIP-2 OPT-2.7B`` for image captioning
+    (``Salesforce/blip2-opt-2.7b`` · ~5.4 GB resident in bf16)
 
-Each model is lazy-loaded on first use; combined resident VRAM is ~1.5 GB
-when all four are warm, which still fits comfortably alongside NF4 FLUX
-(~10 GB) on a 16 GB card. The public API (caption / detect / segment)
-matches what the rest of the app expects so the swap is invisible above
-this module.
+Each model is lazy-loaded on first use; combined resident VRAM with all
+four warm is ~6.5 GB, dominated by BLIP-2. Alongside NF4 FLUX (~10 GB)
+this leaves a few hundred MB of slack on a 16 GB card — fine for normal
+operation, but heavy variant batches (variants ≥ 4) on Kontext + BLIP-2
+warm at the same time can OOM. Drop variants to 1-2 or restart the
+server (which frees the warm vision pipelines until the next click)
+if that happens.
 
-The trade-off vs. Florence-2: captions are shorter and detection is
-limited to COCO classes when no text is provided. For sci-fi / fantasy
-edit workflows this is fine — the goal is "list me the things in this
-scene so I can write a prompt" and BLIP/DETR cover that.
+The public API (caption / detect / segment) matches what the rest of
+the app expects so swapping models inside this file is invisible above.
+
+Trade-off vs. Florence-2: BLIP-2 captions are richer than BLIP-large
+(spatial relations, composition cues, full sentences) but generic
+detection is still limited to the 91 COCO classes — use OWLv2 with
+text for fantasy/sci-fi specifics ("the dragon", "the cyborg armor").
 """
 
 from __future__ import annotations
@@ -43,7 +48,12 @@ log = logging.getLogger(__name__)
 CLIPSEG_MODEL = "CIDAS/clipseg-rd64-refined"
 DETR_MODEL = "facebook/detr-resnet-50"
 OWLV2_MODEL = "google/owlv2-base-patch16-ensemble"
-BLIP_MODEL = "Salesforce/blip-image-captioning-large"
+# BLIP-2 (Q-Former + OPT-2.7B) — richer, longer captions than BLIP-large,
+# better at architecture / scene composition. The trade-off is footprint:
+# ~5.4 GB resident in bf16 vs BLIP-large's ~0.9 GB. Still fits alongside
+# NF4 FLUX on a 16 GB card with a few hundred MB of slack. Loaded lazily,
+# so if the user never clicks "analyze scene" they pay nothing.
+BLIP_MODEL = "Salesforce/blip2-opt-2.7b"
 
 # CLIPSeg's segmentation head outputs continuous probability logits per
 # pixel; this threshold binarizes them. 0.5 is the published default but
@@ -132,11 +142,19 @@ class VisionAnalyzer:
 
     def _load_blip(self) -> tuple[object, object]:  # pragma: no cover — needs GPU + download
         if self._blip is None:
-            from transformers import BlipForConditionalGeneration, BlipProcessor
+            # Auto-registry path (AutoProcessor + AutoModelForImageTextToText)
+            # instead of importing Blip2ForConditionalGeneration directly.
+            # In transformers 5.x the direct class import lazy-loads through
+            # an internal registry that fails inside FastAPI / threaded
+            # contexts ("cannot import name X from 'transformers'") even
+            # when the same import works in a fresh CLI process — sibling
+            # auto-class load order can poison the lazy resolver. Auto*
+            # routes through the config-driven dispatch table and is immune.
+            from transformers import AutoModelForImageTextToText, AutoProcessor
 
-            log.info("loading BLIP (image captioning)")
-            proc = BlipProcessor.from_pretrained(BLIP_MODEL)  # nosec B615
-            model = BlipForConditionalGeneration.from_pretrained(  # nosec B615
+            log.info("loading BLIP-2 OPT-2.7B (image captioning)")
+            proc = AutoProcessor.from_pretrained(BLIP_MODEL)  # nosec B615
+            model = AutoModelForImageTextToText.from_pretrained(  # nosec B615
                 BLIP_MODEL, torch_dtype=self._dtype
             ).to(self._device)
             model.eval()
@@ -150,20 +168,28 @@ class VisionAnalyzer:
     ) -> str:
         """Return a textual description of the scene.
 
-        BLIP-large generates fluent one-or-two-sentence captions out of the
-        box. The ``level`` parameter is accepted for API parity with the
-        old Florence-2 backend but ignored — there's no native equivalent
-        to Florence's three-tier caption control on BLIP. If you want
-        longer text, swap BLIP for BLIP-2 or GIT-large later.
+        BLIP-2 OPT-2.7B produces richer multi-sentence descriptions with
+        spatial relations ("a statue on a column, with a yellow building
+        in the foreground and blue sky behind") — usefully better than
+        BLIP-large for architecture / fantasy / sci-fi scenes.
+
+        The ``level`` parameter is accepted for API parity with the old
+        Florence-2 backend but ignored. BLIP-2 doesn't expose tiered
+        verbosity natively; we always run a single ``generate`` with
+        beam search for fluent output. Adjust ``max_new_tokens`` here if
+        you want longer captions (cost is roughly linear in tokens).
         """
         _ = level  # documented no-op
         rgb = ensure_rgb(image)
         proc, model = self._load_blip()
+        # No text prompt: BLIP-2 in zero-shot caption mode generates
+        # unconditioned. (Passing a leading "a photo of" or VQA-style
+        # prompt would condition it, but we want a plain description.)
         inputs = proc(images=rgb, return_tensors="pt").to(self._device)
         if "pixel_values" in inputs:
             inputs["pixel_values"] = inputs["pixel_values"].to(self._dtype)
         with torch.inference_mode():
-            out = model.generate(**inputs, max_new_tokens=64, num_beams=4)
+            out = model.generate(**inputs, max_new_tokens=128, num_beams=4)
         return proc.decode(out[0], skip_special_tokens=True).strip()
 
     def detect(  # pragma: no cover — dispatches to GPU paths
