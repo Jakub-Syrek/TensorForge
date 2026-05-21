@@ -48,3 +48,9 @@ spandrel>=0.4.0
 # RMBG-2.0 / BiRefNet repos require. Default model is "birefnet-general"
 # for high-quality alpha edges; override via AIPIC_BG_REMOVE_MODEL.
 rembg>=2.0.50
+
+# PuLID face-identity preservation (backend/pulid.py). insightface
+# provides RetinaFace (detection) + ArcFace (512-dim embedding) for
+# extracting the user's face vector. Runs on ONNX runtime (already
+# pulled in by rembg). Only required when mode="pulid" is used.
+insightface>=0.7.3

@@ -57,6 +57,7 @@ from backend.intent import explain as classify_intent
 from backend.pipeline import QUANT_MODE, EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress, query_gpu_stats
 from backend.prompt_rewriter import PromptRewriter
+from backend.pulid import PuLIDGenerator
 from backend.upscale import Upscaler
 from backend.vision import VisionAnalyzer
 from backend.worker import TaskWorker
@@ -89,7 +90,14 @@ prompt_rewriter = PromptRewriter()
 # ~8 GB VRAM under NF4. Cannot coexist with warm Kontext on 16 GB — the
 # worker releases editor state before loading ControlNet.
 controlnet = ControlNetGenerator()
-task_worker = TaskWorker(editor, vision=vision, upscaler=upscaler, controlnet=controlnet)
+# PuLID face-identity preservation — lazy-loaded on mode="pulid" tasks.
+# Requires insightface + the PuLID-FLUX weights; ~7 GB resident under NF4
+# (FLUX.1-dev base + PuLID adapter + ID encoder). Cannot coexist with
+# warm Kontext on 16 GB — worker releases editor state before loading.
+pulid = PuLIDGenerator()
+task_worker = TaskWorker(
+    editor, vision=vision, upscaler=upscaler, controlnet=controlnet, pulid=pulid
+)
 
 
 @asynccontextmanager
@@ -405,6 +413,7 @@ async def create_task(
     ip_scale: float = Form(0.7),
     control_type: str = Form("canny"),
     control_scale: float = Form(0.7),
+    id_scale: float = Form(1.0),
 ) -> JSONResponse:
     """Enqueue an edit/generate task. Returns task id and initial state.
 
@@ -415,8 +424,11 @@ async def create_task(
       - 'control': FLUX ControlNet generation. ``image`` is interpreted as
         the conditioning map (canny edges, depth map, pose skeleton —
         controlled by ``control_type``).
+      - 'pulid': face-preserving generation. ``image`` is interpreted as
+        the reference face photo; ``prompt`` drives the scene, PuLID
+        keeps the face recognizable across stylization.
     """
-    valid_modes = {"kontext", "inpaint", "qwen", "generate", "auto", "control"}
+    valid_modes = {"kontext", "inpaint", "qwen", "generate", "auto", "control", "pulid"}
     if mode not in valid_modes:
         raise HTTPException(400, f"mode must be one of {sorted(valid_modes)}, got {mode!r}")
     if not prompt.strip():
@@ -431,7 +443,10 @@ async def create_task(
                 400,
                 f"control_type must be one of {sorted(UNION_MODES)}, got {control_type!r}",
             )
+    if mode == "pulid" and image is None:
+        raise HTTPException(400, "pulid requires a face reference (uploaded as 'image')")
     clamped_control_scale = max(0.0, min(2.0, float(control_scale)))
+    clamped_id_scale = max(0.0, min(2.0, float(id_scale)))
 
     # Resolve 'auto' -> concrete mode based on prompt keywords + image presence.
     routing = None
@@ -513,6 +528,7 @@ async def create_task(
                 "ip_scale": max(0.0, min(2.0, float(ip_scale))),
                 "control_type": control_type,
                 "control_scale": clamped_control_scale,
+                "id_scale": clamped_id_scale,
             },
         )
         s.add(t)
