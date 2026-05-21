@@ -321,6 +321,15 @@ class TaskWorker:
         style_lora_id = params.get("style_lora_id") or None
         style_lora_scale = float(params.get("style_lora_scale", 1.0))
         upscale_mode = params.get("upscale", "lanczos")
+        # IP-Adapter: optional reference image stored on disk via the
+        # /api/tasks upload path. Loaded lazily here so requests without
+        # an ip_image don't pay the disk-read cost.
+        ip_image_path = params.get("ip_image_path") or None
+        ip_image = None
+        if ip_image_path:
+            ip_image = Image.open(ip_image_path)
+            ip_image = ImageOps.exif_transpose(ip_image)
+        ip_scale = float(params.get("ip_scale", 0.7))
 
         # Resolve input: prefer parent_variant_id (pipeline mid-step) over
         # input_path (initial upload). Mid-pipeline tasks have input_path=NULL
@@ -364,6 +373,8 @@ class TaskWorker:
                 use_accel=use_accel,
                 style_lora_id=style_lora_id,
                 style_lora_scale=style_lora_scale,
+                ip_adapter_image=ip_image,
+                ip_adapter_scale=ip_scale,
             )
             out = self.editor.edit(req)
             job_progress.finish()

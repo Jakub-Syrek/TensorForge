@@ -52,6 +52,15 @@ def save_mask(task_id: str, data: bytes) -> Path:
     return path
 
 
+def save_ip_image(task_id: str, data: bytes) -> Path:
+    """Persist a reference image for IP-Adapter conditioning. Lives next
+    to the input/mask so a delete_task_dir wipes it alongside everything
+    else."""
+    path = task_dir(task_id) / "ip_image.png"
+    path.write_bytes(data)
+    return path
+
+
 def save_variant_output(task_id: str, variant_id: str, data: bytes, ext: str = ".png") -> Path:
     path = variants_dir(task_id) / f"{variant_id}{ext}"
     path.write_bytes(data)
