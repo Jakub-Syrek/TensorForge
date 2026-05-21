@@ -40,12 +40,21 @@
           <button type="button" data-mode="inpaint" class="seg-btn" title="FLUX.1 Fill-dev — regenerates the masked region only">inpaint</button>
           <button type="button" data-mode="qwen" class="seg-btn" title="Qwen-Image-Edit — alternative instruction edit (Qwen2-VL text encoder, ~50 steps default)">Qwen edit</button>
           <button type="button" data-mode="generate" class="seg-btn" title="FLUX.1 schnell — 4-step text-to-image, no input image needed">generate</button>
+          <button type="button" data-mode="outpaint" class="seg-btn" title="Extend the canvas in any direction(s). Pad area is filled with black, then FLUX.1 Fill regenerates only the new pixels using your prompt. Reuses the Fill model — no extra VRAM.">outpaint</button>
         </div>
       </div>
 
       <div class="row brush-row hidden" id="brushRow">
         <label>brush <input id="brushSize" type="range" min="4" max="120" value="40" /></label>
         <button type="button" id="clearMask">clear mask</button>
+      </div>
+
+      <div class="row outpaint-row hidden" id="outpaintRow">
+        <label title="Pixels to add above the image">top <input id="padTop" type="number" min="0" max="1024" step="32" value="256" /></label>
+        <label title="Pixels to add to the right">right <input id="padRight" type="number" min="0" max="1024" step="32" value="256" /></label>
+        <label title="Pixels to add below the image">bottom <input id="padBottom" type="number" min="0" max="1024" step="32" value="256" /></label>
+        <label title="Pixels to add to the left">left <input id="padLeft" type="number" min="0" max="1024" step="32" value="256" /></label>
+        <span class="muted small">prompt describes what fills the extended area</span>
       </div>
 
       <div class="row auto-mask-row hidden" id="autoMaskRow">
