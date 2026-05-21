@@ -165,15 +165,20 @@ async def vision_segment(
 @app.post("/api/vision/caption")
 async def vision_caption(
     image: UploadFile = File(...),
+    depth: str = Form("fast"),
     level: str = Form("detailed"),
 ) -> JSONResponse:
     """Generate a text description of the scene.
 
-    level: 'short' (1 sentence), 'detailed' (~2-3 sentences), or
-    'more_detailed' (long paragraph with spatial relations). UI uses this
-    as a prompt-writing helper — the user can copy/edit it before running
-    an edit instead of staring at the input wondering how to describe it.
+    depth: 'fast' (BLIP-large, single sentence, ~0.9 GB VRAM) or
+           'deep' (BLIP-2 OPT-2.7B, multi-sentence, ~5.4 GB VRAM).
+           Default 'fast' keeps the UX snappy and the VRAM headroom big.
+
+    level: legacy parameter retained for back-compat with the old
+           Florence-2 backend; ignored by the current BLIP pipeline.
     """
+    if depth not in {"fast", "deep"}:
+        raise HTTPException(400, f"depth must be 'fast' or 'deep', got {depth!r}")
     img_bytes = await image.read()
     try:
         img = Image.open(io.BytesIO(img_bytes))
@@ -185,10 +190,10 @@ async def vision_caption(
         raise HTTPException(413, f"Image too large: {ex}") from ex
 
     try:
-        caption = await asyncio.to_thread(vision.caption, img, level)
+        caption = await asyncio.to_thread(vision.caption, img, depth, level)
     except Exception as ex:
         raise HTTPException(500, f"caption failed: {ex}") from ex
-    return JSONResponse({"caption": caption, "level": level})
+    return JSONResponse({"caption": caption, "depth": depth, "level": level})
 
 
 @app.post("/api/vision/detect")
