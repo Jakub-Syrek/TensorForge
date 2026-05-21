@@ -8,7 +8,8 @@ from __future__ import annotations
 from PIL import Image
 
 from backend.vision import (
-    BLIP_MODEL,
+    BLIP_DEEP_MODEL,
+    BLIP_FAST_MODEL,
     CLIPSEG_MODEL,
     DETR_MODEL,
     OWLV2_MODEL,
@@ -23,7 +24,9 @@ def test_model_ids_are_huggingface_repo_strings():
     assert CLIPSEG_MODEL.startswith("CIDAS/")
     assert DETR_MODEL.startswith("facebook/")
     assert OWLV2_MODEL.startswith("google/")
-    assert BLIP_MODEL.startswith("Salesforce/")
+    assert BLIP_FAST_MODEL.startswith("Salesforce/")
+    assert BLIP_DEEP_MODEL.startswith("Salesforce/")
+    assert BLIP_FAST_MODEL != BLIP_DEEP_MODEL
 
 
 def test_detected_object_default_score_is_none():
@@ -45,7 +48,8 @@ def test_vision_analyzer_constructor_does_not_load_models():
     assert v._clipseg is None
     assert v._detr is None
     assert v._owlv2 is None
-    assert v._blip is None
+    assert v._blip_fast is None
+    assert v._blip_deep is None
 
 
 def test_draw_polygons_empty_input_returns_blank_mask():

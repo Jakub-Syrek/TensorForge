@@ -120,20 +120,22 @@ function resetAnalyze() {
   $("analyzeStatus").textContent = "";
 }
 
-async function runAnalyze() {
+async function runAnalyze(depth) {
   if (!state.imageFile) return;
-  const btn = $("analyzeBtn");
-  btn.disabled = true;
-  $("analyzeStatus").textContent = "analyzing…";
+  const fastBtn = $("analyzeFastBtn");
+  const deepBtn = $("analyzeDeepBtn");
+  fastBtn.disabled = true;
+  deepBtn.disabled = true;
   resetAnalyze();
-  $("analyzeStatus").textContent = "analyzing…";
+  const label = depth === "deep" ? "deep analyzing (BLIP-2)…" : "fast analyzing…";
+  $("analyzeStatus").textContent = label;
   try {
-    // Fire both in parallel — Florence-2 loads once on the first call,
-    // second call hits a warm model. Two sequential requests but minimal
-    // overhead vs. exposing one combined endpoint.
+    // Caption + detection fire in parallel — both share the same vision
+    // backend instance so the first request triggers any needed lazy
+    // loads, the second piggybacks on the warm models.
     const fdCap = new FormData();
     fdCap.append("image", state.imageFile);
-    fdCap.append("level", "detailed");
+    fdCap.append("depth", depth);
     const fdDet = new FormData();
     fdDet.append("image", state.imageFile);
     const [capR, detR] = await Promise.all([
@@ -172,7 +174,8 @@ async function runAnalyze() {
     $("analyzeStatus").textContent = String(e.message || e);
     $("analyzeStatus").classList.add("err");
   } finally {
-    btn.disabled = false;
+    $("analyzeFastBtn").disabled = false;
+    $("analyzeDeepBtn").disabled = false;
   }
 }
 
@@ -191,7 +194,8 @@ function insertIntoPrompt(text) {
   ta.focus();
 }
 
-$("analyzeBtn").addEventListener("click", runAnalyze);
+$("analyzeFastBtn").addEventListener("click", () => runAnalyze("fast"));
+$("analyzeDeepBtn").addEventListener("click", () => runAnalyze("deep"));
 
 function fitCanvases(w, h) {
   imgCanvas.width = maskCanvas.width = w;

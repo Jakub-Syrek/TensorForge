@@ -25,7 +25,8 @@
       </div>
 
       <div class="row analyze-row hidden" id="analyzeRow">
-        <button type="button" id="analyzeBtn" title="Florence-2 captions the scene and lists detected objects. Click a chip to insert that label into the prompt — handy for 'replace the X with Y' style edits.">analyze scene</button>
+        <button type="button" id="analyzeFastBtn" title="BLIP-large caption (single sentence) + DETR object chips. ~0.9 GB VRAM, fast. Click a chip to insert its label into the prompt.">fast analyze</button>
+        <button type="button" id="analyzeDeepBtn" title="BLIP-2 OPT-2.7B caption (multi-sentence, richer detail with spatial relations) + DETR object chips. ~5.4 GB VRAM, slower first-load. Use when the fast caption isn't enough.">deep analyze</button>
         <span id="analyzeStatus" class="muted small"></span>
         <div class="analyze-caption muted small" id="analyzeCaption"></div>
         <div class="analyze-chips" id="analyzeChips"></div>
