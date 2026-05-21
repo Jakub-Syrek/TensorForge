@@ -66,6 +66,18 @@
         <label title="Number of variants to generate (different seeds, same prompt + params). 1 = direct run; 2-8 = pick the best afterwards. Worker is single-GPU so variants run sequentially.">variants <input id="variants" type="number" min="1" max="8" value="1" /></label>
       </div>
 
+      <div class="row lora-row" id="loraRow">
+        <label class="lora-select" title="Style LoRA — biases FLUX toward a specific aesthetic (fantasy, anime, retro sci-fi…). Loaded once on first use; applies to Kontext + generate only. Inpaint + Qwen ignore it.">style LoRA
+          <select id="styleLora">
+            <option value="">(none)</option>
+          </select>
+        </label>
+        <label title="Adapter weight. 1.0 = trained default; lower for subtle hint, higher for stronger style. Above ~1.3 starts breaking anatomy.">weight
+          <input id="styleLoraScale" type="number" step="0.05" min="0" max="2" value="1.0" />
+        </label>
+        <span id="loraTrigger" class="muted small"></span>
+      </div>
+
       <div class="row accel-row hidden" id="accelRow">
         <label class="accel-toggle" title="Hyper-SD / Flux-Turbo LoRA on the transformer. When on: 8 steps gives near-28-step quality at ~3× speed. Toggle off for final renders.">
           <input type="checkbox" id="accelToggle" checked />

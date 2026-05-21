@@ -47,6 +47,41 @@ fetch("/api/health").then(r => r.json()).then(h => {
   }
 }).catch(() => { $("health").textContent = "health: server unreachable"; });
 
+// --- style LoRA registry -------------------------------------------------
+// Populated once from /api/loras. Used both for the dropdown and for the
+// trigger-word hint shown beneath the selector. Server-side validation is
+// authoritative — this UI is convenience, not enforcement.
+state.lorasById = new Map();
+fetch("/api/loras").then(r => r.json()).then(({ loras }) => {
+  const sel = $("styleLora");
+  loras.forEach(lo => {
+    state.lorasById.set(lo.id, lo);
+    const opt = document.createElement("option");
+    opt.value = lo.id;
+    opt.textContent = lo.label;
+    if (lo.description) opt.title = lo.description;
+    sel.appendChild(opt);
+  });
+  updateLoraTrigger();
+}).catch(() => { /* registry is optional, dropdown stays at '(none)' */ });
+
+function updateLoraTrigger() {
+  const id = $("styleLora").value;
+  const lo = id ? state.lorasById.get(id) : null;
+  const hint = $("loraTrigger");
+  if (lo && lo.trigger) {
+    hint.textContent = `trigger: "${lo.trigger}"`;
+  } else if (lo && lo.description) {
+    hint.textContent = lo.description;
+  } else {
+    hint.textContent = "";
+  }
+}
+
+// Wire up after DOM is parsed — the script tag is at end of body, so the
+// elements already exist when this runs.
+$("styleLora").addEventListener("change", updateLoraTrigger);
+
 // --- file input + drop ---------------------------------------------------
 const dz = $("dropzone");
 const file = $("file");
@@ -192,6 +227,11 @@ async function runEdit() {
     fd.append("use_accel", $("accelToggle").checked ? "true" : "false");
   }
   fd.append("variants", String(variantsCount));
+  const selectedLora = $("styleLora").value;
+  if (selectedLora) {
+    fd.append("style_lora", selectedLora);
+    fd.append("style_lora_scale", $("styleLoraScale").value || "1.0");
+  }
   if (state.mode === "inpaint") fd.append("mask", await maskBlob(), "mask.png");
 
   $("run").disabled = true;
@@ -231,12 +271,20 @@ async function runEdit() {
 }
 
 // --- pipeline submission + polling -------------------------------------
+// Pipeline line syntax:
+//   "<prompt>"                    -> mode=auto, no override
+//   "[kontext] <prompt>"          -> force mode for this step
+//   "[kontext|tarot] <prompt>"    -> mode + style LoRA id for this step
+//   "[|tarot] <prompt>"           -> auto mode, style override
 function parsePipelineSteps(raw) {
   const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
   return lines.map((line) => {
-    const m = line.match(/^\[(\w+)\]\s+(.+)$/);
-    if (m) return { mode: m[1].toLowerCase(), prompt: m[2] };
-    return { mode: "auto", prompt: line };
+    const m = line.match(/^\[([\w|-]*)\]\s+(.+)$/);
+    if (!m) return { mode: "auto", prompt: line };
+    const [modePart, loraPart] = m[1].split("|");
+    const step = { mode: (modePart || "auto").toLowerCase(), prompt: m[2] };
+    if (loraPart) step.style_lora = loraPart.toLowerCase();
+    return step;
   });
 }
 
@@ -251,6 +299,18 @@ async function runPipeline(rawPrompt) {
     if (!VALID.has(steps[i].mode)) {
       return setStatus(`step ${i + 1}: invalid mode '${steps[i].mode}'`, "err");
     }
+  }
+
+  // Apply the UI's style-LoRA selection as a default for every step that
+  // didn't declare its own override via [mode|lora] syntax. Scale is shared
+  // across the chain — per-step weight tuning would bloat the line syntax.
+  const defaultLora = $("styleLora").value;
+  const defaultScale = parseFloat($("styleLoraScale").value || "1.0");
+  if (defaultLora) {
+    steps.forEach((s) => {
+      if (!s.style_lora) s.style_lora = defaultLora;
+      if (s.style_lora_scale == null) s.style_lora_scale = defaultScale;
+    });
   }
 
   const fd = new FormData();

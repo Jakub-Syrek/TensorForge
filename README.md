@@ -9,11 +9,27 @@
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
 [![Tested with Hypothesis](https://img.shields.io/badge/tested%20with-hypothesis-purple)](https://hypothesis.works/)
 
-Web app for prompt-driven image editing with FLUX, sized for an RTX 5080
-(Blackwell · sm_120 · 16 GB).
+Web app for prompt-driven image generation and editing with FLUX, tuned for
+producing **fantasy and sci-fi artwork** on a single RTX 5080
+(Blackwell · sm_120 · 16 GB). Built around four model backends + a curated
+style-LoRA registry so the same FLUX checkpoint can render Ghibli-style
+landscapes, retro-tarot fantasy cards, cyberpunk megacities, anime keyframes
+or analog-film cinematic scenes — no checkpoint swapping required.
 
-- **Global edit** — FLUX.1 Kontext: keeps composition, follows instructions.
-- **Inpaint** — FLUX.1 Fill: regenerates a painted mask region only.
+- **Generate** — FLUX.1-schnell: 4-step text-to-image for fresh sci-fi /
+  fantasy compositions from scratch.
+- **Global edit** — FLUX.1-Kontext: instruction edits that keep composition
+  (turn an existing photo into a derelict alien cathedral, swap props,
+  re-light the scene).
+- **Inpaint** — FLUX.1-Fill: regenerates only a painted mask region.
+- **Qwen edit** — Qwen-Image-Edit: alternative instruction edit with
+  Qwen2-VL text encoder (helps on long / multilingual prompts).
+- **Style LoRAs** — combine with Kontext / generate to bias the aesthetic
+  (XLabs Realism, Koda analog film, Tarot card, Ghibsky illustration,
+  Synthetic Anime — extend via `backend/loras.py` or `loras.json`).
+- **Pipelines** — chain steps sequentially (each line of the prompt is a
+  step, optional `[mode|lora]` prefix). Generate → Kontext → Kontext is
+  the canonical sci-fi/fantasy workflow: birth a scene, then iterate.
 
 For prompt patterns, mode selection guide, and iteration workflow, see
 **[README.tech.md](README.tech.md)**.
@@ -79,6 +95,42 @@ python backend\server.py
 Open <http://127.0.0.1:8000>. First request in each mode downloads the
 relevant model weights into the HF cache (Flux Kontext + Fill: ~33 GB
 each; Qwen-Image-Edit: ~20 GB).
+
+## Style LoRAs (fantasy / sci-fi presets)
+
+A style LoRA is a small adapter (~150–300 MB) that biases the base FLUX
+model toward a specific aesthetic. The base checkpoint is shared; only the
+LoRA delta swaps in. Pick one from the dropdown above the run button —
+combines cleanly with the acceleration LoRA so you can still run 8-step
+"fast fantasy" mode.
+
+Built-in registry (extend in `backend/loras.py` or `backend/loras.json`):
+
+| id        | label              | best for                                      | trigger word                                |
+|-----------|--------------------|-----------------------------------------------|---------------------------------------------|
+| realism   | XLabs Realism      | photoreal sci-fi (mecha, EVA suits, station)  | —                                           |
+| koda      | Koda (analog film) | cinematic, Tarkovsky-Solaris vibe             | `flmft style`                               |
+| tarot     | Tarot card         | ornate fantasy, mystical, symbolic            | `in the style of TOK a trtcrd tarot style`  |
+| ghibsky   | Ghibsky            | cosy-fantasy landscapes, Ghibli-esque         | `GHIBSKY style`                             |
+| anime     | Synthetic Anime    | anime/manga keyframes, character art          | —                                           |
+
+Adapter weight `1.0` matches training. Drop to `0.7–0.8` if style dominates
+semantics; push to `1.1–1.2` if barely visible; above `1.3` anatomy
+breaks. LoRAs apply to `generate` and `kontext` only — `inpaint` and `qwen`
+ignore the selection by design (different architecture / use case).
+
+Requires `peft >= 0.13` in your venv (`pip install peft`).
+
+In pipeline mode each step can override the LoRA inline:
+
+```
+[generate|tarot] knight in stormy landscape
+[kontext|ghibsky] make it golden hour, soft cumulus clouds
+[kontext|realism] add subtle film grain and chromatic aberration
+```
+
+`[mode|lora]` — leave either side empty (e.g. `[|tarot]`) to keep the
+default for that slot.
 
 ## 4-bit quantization (recommended on 16 GB cards)
 

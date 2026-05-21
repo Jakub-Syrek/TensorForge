@@ -231,6 +231,8 @@ class TaskWorker:
         sharpen_level = params.get("sharpen_level", "off")
         gen_width = int(params.get("gen_width", 1024))
         gen_height = int(params.get("gen_height", 1024))
+        style_lora_id = params.get("style_lora_id") or None
+        style_lora_scale = float(params.get("style_lora_scale", 1.0))
 
         # Resolve input: prefer parent_variant_id (pipeline mid-step) over
         # input_path (initial upload). Mid-pipeline tasks have input_path=NULL
@@ -272,6 +274,8 @@ class TaskWorker:
                 width=gen_width,
                 height=gen_height,
                 use_accel=use_accel,
+                style_lora_id=style_lora_id,
+                style_lora_scale=style_lora_scale,
             )
             out = self.editor.edit(req)
             job_progress.finish()

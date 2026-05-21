@@ -19,7 +19,18 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Integer, String, create_engine
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    create_engine,
+    inspect,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
 
 from backend.storage import DATA_DIR
@@ -107,11 +118,41 @@ engine = _make_engine()
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
 
 
+def _apply_lightweight_migrations() -> None:
+    """Idempotent ALTER TABLE migrations for columns added after the DB
+    file was first created. SQLite supports ADD COLUMN but not DROP/ALTER
+    of existing ones — fine for additive-only changes. Switch to Alembic
+    if anything more complex is needed."""
+    inspector = inspect(engine)
+    if "tasks" not in inspector.get_table_names():
+        return  # create_all will handle a fresh DB
+
+    existing_cols = {col["name"] for col in inspector.get_columns("tasks")}
+    additions = [
+        ("pipeline_id", "VARCHAR(32)"),
+        ("pipeline_step", "INTEGER"),
+        ("parent_variant_id", "VARCHAR(32)"),
+    ]
+    with engine.begin() as conn:
+        for name, sqltype in additions:
+            if name not in existing_cols:
+                conn.execute(text(f"ALTER TABLE tasks ADD COLUMN {name} {sqltype}"))
+        # Optional index on pipeline_id (matches ORM index=True declaration).
+        if (
+            any(name == "pipeline_id" for name, _ in additions)
+            and "pipeline_id" not in existing_cols
+        ):
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_tasks_pipeline_id ON tasks (pipeline_id)")
+            )
+
+
 def init_db() -> None:
-    """Create tables if they don't exist. No migrations yet — schema is
-    additive enough that we can ALTER manually for now. Switch to Alembic
-    when the schema starts moving."""
+    """Create tables if they don't exist, then run additive migrations to
+    pick up columns introduced after the on-disk DB was first written.
+    Switch to Alembic when the schema starts moving in non-additive ways."""
     Base.metadata.create_all(engine)
+    _apply_lightweight_migrations()
 
 
 def get_session() -> Session:

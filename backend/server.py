@@ -31,7 +31,16 @@ import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
+
+# PIL guards against decompression-bomb attacks with a 178 MP cap on the
+# decoded pixel count. Full-res phone photos and any 4:3 image at ~16 kpx
+# trip it — which makes /api/tasks 500 on perfectly normal uploads. This
+# is a local single-user tool, not an exposed service, so we raise the
+# ceiling well above any realistic camera output but keep *some* sanity
+# limit instead of disabling the guard entirely (None would silently load
+# truly hostile files into VRAM).
+Image.MAX_IMAGE_PIXELS = 500_000_000  # 500 MP
 from pydantic import BaseModel
 
 # Allow `python backend/server.py` execution.
@@ -39,7 +48,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend import storage
+from backend import loras, storage
 from backend.db import Task, Variant, get_session, init_db
 from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_bytes, sharpen
 from backend.intent import explain as classify_intent
@@ -104,6 +113,13 @@ def health() -> JSONResponse:
     return JSONResponse(payload)
 
 
+@app.get("/api/loras")
+def list_loras() -> JSONResponse:
+    """List available style LoRAs for the UI dropdown. Static list — comes
+    from ``backend.loras.STYLE_LORAS`` (built-ins + optional user JSON)."""
+    return JSONResponse({"loras": loras.as_public_list()})
+
+
 @app.get("/api/progress")
 def progress() -> JSONResponse:
     gpu = query_gpu_stats()
@@ -144,6 +160,8 @@ class PipelineStep(BaseModel):
     max_edge: int | None = None
     gen_width: int | None = None
     gen_height: int | None = None
+    style_lora: str | None = None
+    style_lora_scale: float | None = None
 
 
 def _serialize_variant(v: Variant) -> dict:
@@ -192,6 +210,8 @@ async def create_task(
     variants: int = Form(1),
     gen_width: int = Form(1024),
     gen_height: int = Form(1024),
+    style_lora: str | None = Form(None),
+    style_lora_scale: float = Form(1.0),
 ) -> JSONResponse:
     """Enqueue an edit/generate task. Returns task id and initial state.
 
@@ -222,12 +242,33 @@ async def create_task(
     variants_n = max(1, min(8, int(variants)))
     effective_max_edge = MAX_EDGE if max_edge is None else max(64, min(2048, int(max_edge)))
 
+    # Validate style LoRA id against the registry; ignore if not compatible
+    # with the resolved mode so we don't poison Fill / Qwen runs.
+    resolved_style_id: str | None = None
+    if style_lora:
+        lora_obj = loras.get(style_lora)
+        if lora_obj is None:
+            raise HTTPException(400, f"unknown style_lora: {style_lora!r}")
+        if loras.is_compatible(lora_obj, mode):
+            resolved_style_id = lora_obj.id
+    clamped_style_scale = max(0.0, min(2.0, float(style_lora_scale)))
+
     # Image is optional for generate; load + persist if present.
     img_bytes = None
     original_w = original_h = None
     if image is not None:
         img_bytes = await image.read()
-        img = Image.open(io.BytesIO(img_bytes))
+        try:
+            img = Image.open(io.BytesIO(img_bytes))
+            img.load()  # force decode now so we surface format errors here
+        except Image.DecompressionBombError as ex:
+            raise HTTPException(
+                413,
+                f"Image too large: {ex}. Resize before uploading "
+                f"(current cap: {Image.MAX_IMAGE_PIXELS // 1_000_000} MP).",
+            ) from ex
+        except (UnidentifiedImageError, OSError) as ex:
+            raise HTTPException(400, f"Could not decode image: {ex}") from ex
         img = ImageOps.exif_transpose(img)
         original_w, original_h = img.size
 
@@ -256,6 +297,8 @@ async def create_task(
                 "gen_width": gen_w,
                 "gen_height": gen_h,
                 "routing": routing,  # null unless mode was 'auto'
+                "style_lora_id": resolved_style_id,
+                "style_lora_scale": clamped_style_scale,
             },
         )
         s.add(t)
@@ -388,6 +431,22 @@ async def create_pipeline(
                 routing = classify_intent(step.prompt, has_image=has_img)
                 mode = "kontext" if routing["intent"] == "edit" else "generate"
 
+            # Resolve + clamp the per-step style LoRA. Unknown ids are
+            # rejected; incompatible-with-mode is silently dropped (so a
+            # 'fantasy' LoRA on an inpaint step doesn't kill the pipeline).
+            step_style_id: str | None = None
+            if step.style_lora:
+                lora_obj = loras.get(step.style_lora)
+                if lora_obj is None:
+                    raise HTTPException(400, f"step {i}: unknown style_lora {step.style_lora!r}")
+                if loras.is_compatible(lora_obj, mode):
+                    step_style_id = lora_obj.id
+            step_style_scale = (
+                max(0.0, min(2.0, float(step.style_lora_scale)))
+                if step.style_lora_scale is not None
+                else 1.0
+            )
+
             params = {
                 "steps": step.steps if step.steps is not None else 28,
                 "guidance": step.guidance if step.guidance is not None else 3.5,
@@ -397,6 +456,8 @@ async def create_pipeline(
                 "gen_width": step.gen_width if step.gen_width is not None else 1024,
                 "gen_height": step.gen_height if step.gen_height is not None else 1024,
                 "routing": routing,
+                "style_lora_id": step_style_id,
+                "style_lora_scale": step_style_scale,
             }
             t = Task(
                 mode=mode,

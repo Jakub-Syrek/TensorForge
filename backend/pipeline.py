@@ -6,6 +6,7 @@ plus VAE slicing/tiling are required — they're not optional polish.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import os
 from dataclasses import dataclass
@@ -15,6 +16,9 @@ import torch
 from PIL import Image
 
 from backend.imgutils import ensure_l, ensure_rgb
+from backend.loras import StyleLoRA
+from backend.loras import get as get_style_lora
+from backend.loras import is_compatible as style_compatible
 from backend.progress import job_progress
 
 KONTEXT_MODEL = "black-forest-labs/FLUX.1-Kontext-dev"
@@ -91,6 +95,11 @@ class EditRequest:
     # edit; when False, disable it (lets the UI flip between fast 8-step
     # and full 28-step quality without reloading the pipeline).
     use_accel: bool = True
+    # Optional style LoRA id (from backend.loras.STYLE_LORAS). When set, the
+    # corresponding adapter is loaded (once) and combined with the accel
+    # adapter via diffusers' multi-adapter mechanism. None = no style bias.
+    style_lora_id: str | None = None
+    style_lora_scale: float = 1.0
 
 
 class FluxEditor:
@@ -103,6 +112,10 @@ class FluxEditor:
         self._schnell = None
         self._dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
         self.accel = accel if accel is not None else AccelConfig.from_env()
+        # Per-pipeline set of style LoRA adapter names already loaded onto
+        # that pipe. Keyed by ``id(pipe)`` so pipes are tracked even though
+        # they're plain objects (no hashable identity beyond that).
+        self._loaded_style_loras: dict[int, set[str]] = {}
 
     def _load_kontext(self):  # pragma: no cover — requires GPU + 24 GB model
         from diffusers import FluxKontextPipeline
@@ -226,12 +239,62 @@ class FluxEditor:
         pipe.set_adapters([self.ACCEL_ADAPTER_NAME], adapter_weights=[self.accel.scale])
 
     def _set_accel_active(self, pipe, enabled: bool) -> None:  # pragma: no cover — GPU pipe
+        """Legacy single-adapter setter — kept for callers that don't deal
+        with style LoRAs. New code should use ``_set_active_adapters``."""
         if self.accel is None:
             return
         if enabled:
             pipe.set_adapters([self.ACCEL_ADAPTER_NAME], adapter_weights=[self.accel.scale])
         else:
             pipe.set_adapters([])
+
+    def _style_adapter_name(self, lora: StyleLoRA) -> str:
+        return f"style_{lora.id}"
+
+    def _ensure_style_lora_loaded(self, pipe, lora: StyleLoRA) -> str:  # pragma: no cover — GPU
+        """Load `lora` onto `pipe` once. Returns the diffusers adapter name."""
+        adapter_name = self._style_adapter_name(lora)
+        loaded = self._loaded_style_loras.setdefault(id(pipe), set())
+        if adapter_name in loaded:
+            return adapter_name
+        pipe.load_lora_weights(
+            lora.repo,
+            weight_name=lora.weight_name,
+            adapter_name=adapter_name,
+        )
+        loaded.add(adapter_name)
+        return adapter_name
+
+    def _set_active_adapters(  # pragma: no cover — GPU pipe
+        self,
+        pipe,
+        *,
+        use_accel: bool,
+        style: StyleLoRA | None,
+        style_scale: float,
+    ) -> None:
+        """Compose the adapter stack for one request.
+
+        Accel + style are independent layers. Diffusers' multi-adapter API
+        takes parallel name/weight lists and blends linearly. An empty list
+        disables every adapter on the pipe.
+        """
+        names: list[str] = []
+        weights: list[float] = []
+        if self.accel is not None and use_accel:
+            names.append(self.ACCEL_ADAPTER_NAME)
+            weights.append(self.accel.scale)
+        if style is not None:
+            adapter_name = self._ensure_style_lora_loaded(pipe, style)
+            names.append(adapter_name)
+            weights.append(style_scale)
+        if names:
+            pipe.set_adapters(names, adapter_weights=weights)
+        else:
+            # No adapters requested. If the pipe never had any loaded, calling
+            # set_adapters([]) raises on some diffusers versions — guard it.
+            with contextlib.suppress(ValueError, RuntimeError):
+                pipe.set_adapters([])
 
     def _apply_memory_savers(self, pipe) -> None:  # pragma: no cover — GPU branches
         if torch.cuda.is_available():
@@ -298,9 +361,20 @@ class FluxEditor:
             job_progress.advance(step)
             return callback_kwargs
 
+        # Resolve optional style LoRA. Only kontext + generate accept one
+        # (fill / qwen ignored by design — see backend/loras.py docstring).
+        style = get_style_lora(req.style_lora_id)
+        if style is not None and not style_compatible(style, req.mode):
+            style = None
+
         try:
             if req.mode == "kontext":
-                self._set_accel_active(self.kontext, req.use_accel)
+                self._set_active_adapters(
+                    self.kontext,
+                    use_accel=req.use_accel,
+                    style=style,
+                    style_scale=req.style_lora_scale,
+                )
                 result = self.kontext(
                     prompt=req.prompt,
                     image=image,
@@ -345,7 +419,12 @@ class FluxEditor:
                 # Flux schnell: 4-step distilled t2i. No input image. The
                 # accel LoRA toggle still applies if configured (rare but
                 # not harmful — Hyper-SD pushes schnell to ~1-2 steps).
-                self._set_accel_active(self.schnell, req.use_accel)
+                self._set_active_adapters(
+                    self.schnell,
+                    use_accel=req.use_accel,
+                    style=style,
+                    style_scale=req.style_lora_scale,
+                )
                 # schnell's guidance is baked in via distillation; passing
                 # guidance_scale=0 is the recommended sentinel.
                 result = self.schnell(
