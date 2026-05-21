@@ -67,10 +67,10 @@ from backend.worker import TaskWorker
 MAX_EDGE = int(os.environ.get("FLUX_MAX_EDGE", "1024" if QUANT_MODE else "512"))
 
 editor = FluxEditor()
-task_worker = TaskWorker(editor)
 # Florence-2 vision backend — lazy-loaded on first /api/vision/* hit so
 # adding the import doesn't move 1.5 GB into VRAM at server startup.
 vision = VisionAnalyzer()
+task_worker = TaskWorker(editor, vision=vision)
 
 
 @asynccontextmanager
@@ -444,7 +444,14 @@ async def create_pipeline(
             raise HTTPException(400, f"step {i}: {exc}") from exc
         if not parsed_steps[-1].prompt.strip():
             raise HTTPException(400, f"step {i}: prompt is empty")
-        if parsed_steps[-1].mode not in {"kontext", "inpaint", "qwen", "generate", "auto"}:
+        if parsed_steps[-1].mode not in {
+            "kontext",
+            "inpaint",
+            "qwen",
+            "generate",
+            "auto",
+            "auto_mask",
+        }:
             raise HTTPException(400, f"step {i}: invalid mode {parsed_steps[-1].mode!r}")
 
     pipeline_id = uuid.uuid4().hex

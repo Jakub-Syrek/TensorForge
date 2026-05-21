@@ -50,7 +50,7 @@
       </div>
 
       <div class="row pipeline-row">
-        <label class="pipeline-toggle" title="When on, each non-empty line of the prompt is a separate step. Prefix a line with [mode] (e.g. [generate], [kontext]) to force that model for that step; otherwise the line goes through auto-routing. Steps run sequentially and feed each other.">
+        <label class="pipeline-toggle" title="When on, each non-empty line of the prompt is a separate step. Prefix a line with [mode] (e.g. [generate], [kontext], [auto_mask]) to force that model. Use [auto_mask] <phrase> followed by [inpaint] for 'segment X, then inpaint that region' without brushing. Steps run sequentially and feed each other.">
           <input type="checkbox" id="pipelineToggle" />
           <span>pipeline mode (each line = a step, optional [mode] prefix)</span>
         </label>

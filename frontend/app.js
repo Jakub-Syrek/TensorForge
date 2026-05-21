@@ -357,6 +357,9 @@ async function runEdit() {
 //   "[kontext] <prompt>"          -> force mode for this step
 //   "[kontext|tarot] <prompt>"    -> mode + style LoRA id for this step
 //   "[|tarot] <prompt>"           -> auto mode, style override
+//   "[auto_mask] <phrase>"        -> Florence-2 segment step; <phrase>
+//                                   becomes the mask for the next step
+//                                   (typically [inpaint] that follows)
 function parsePipelineSteps(raw) {
   const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
   return lines.map((line) => {
@@ -375,7 +378,7 @@ async function runPipeline(rawPrompt) {
   if (steps.length > 10) return setStatus(`too many steps (${steps.length} > 10)`, "err");
 
   // Validate per-step modes client-side for a fast error before we round-trip.
-  const VALID = new Set(["auto", "kontext", "inpaint", "qwen", "generate"]);
+  const VALID = new Set(["auto", "kontext", "inpaint", "qwen", "generate", "auto_mask"]);
   for (let i = 0; i < steps.length; i++) {
     if (!VALID.has(steps[i].mode)) {
       return setStatus(`step ${i + 1}: invalid mode '${steps[i].mode}'`, "err");
