@@ -4,5 +4,9 @@
     "ask": [
       "Bash(git push origin main)"
     ]
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
   }
 }

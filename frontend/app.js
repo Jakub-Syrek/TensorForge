@@ -332,6 +332,7 @@ document.querySelectorAll(".seg-btn").forEach(btn => {
     state.mode = btn.dataset.mode;
     $("brushRow").classList.toggle("hidden", state.mode !== "inpaint");
     $("autoMaskRow").classList.toggle("hidden", state.mode !== "inpaint");
+    $("outpaintRow").classList.toggle("hidden", state.mode !== "outpaint");
     maskCanvas.style.pointerEvents = state.mode === "inpaint" ? "auto" : "none";
     // Auto-adjust params only when switching to a mode with materially
     // different defaults (Qwen needs ~50 steps; Flux modes need ~28).
@@ -461,6 +462,50 @@ function paintAt(p) {
 // --- run -----------------------------------------------------------------
 $("run").addEventListener("click", runEdit);
 
+/**
+ * Build the extended image and binary mask blobs for an outpaint request.
+ *
+ * @param {HTMLImageElement} origImage - The currently loaded input image.
+ * @param {{top:number,right:number,bottom:number,left:number}} pads - Pixels
+ *   to add on each side. Any side can be 0; total > 0 must be enforced by
+ *   the caller.
+ * @returns {Promise<[Blob, Blob]>} Tuple of (extended-image PNG,
+ *   mask PNG where white covers the new pad area).
+ */
+async function buildOutpaintBlobs(origImage, pads) {
+  const origW = origImage.naturalWidth;
+  const origH = origImage.naturalHeight;
+  const newW = origW + pads.left + pads.right;
+  const newH = origH + pads.top + pads.bottom;
+
+  // Extended image: black fill in the pad area, original drawn at offset.
+  // Black is safer than transparent for FLUX Fill — the model handles
+  // solid-edge transitions cleanly, alpha can confuse it.
+  const imgCv = document.createElement("canvas");
+  imgCv.width = newW;
+  imgCv.height = newH;
+  const imgCt = imgCv.getContext("2d");
+  imgCt.fillStyle = "black";
+  imgCt.fillRect(0, 0, newW, newH);
+  imgCt.drawImage(origImage, pads.left, pads.top, origW, origH);
+
+  // Mask: white over the pad (= inpaint here), black over the original
+  // (= preserve). Convention matches FLUX Fill's expected mask polarity.
+  const maskCv = document.createElement("canvas");
+  maskCv.width = newW;
+  maskCv.height = newH;
+  const maskCt = maskCv.getContext("2d");
+  maskCt.fillStyle = "white";
+  maskCt.fillRect(0, 0, newW, newH);
+  maskCt.fillStyle = "black";
+  maskCt.fillRect(pads.left, pads.top, origW, origH);
+
+  const toBlob = (cv) => new Promise((res, rej) => {
+    cv.toBlob((b) => (b ? res(b) : rej(new Error("toBlob returned null"))), "image/png");
+  });
+  return Promise.all([toBlob(imgCv), toBlob(maskCv)]);
+}
+
 async function runEdit() {
   const prompt = $("prompt").value.trim();
   if (!prompt) return setStatus("prompt is empty", "err");
@@ -476,11 +521,41 @@ async function runEdit() {
   if (needsImage && !state.imageFile) return setStatus("upload an image first", "err");
   if (state.mode === "inpaint" && !state.maskDirty) return setStatus("paint a mask first", "err");
 
+  // Outpainting reuses FLUX Fill — we build an extended canvas with the
+  // original image inset by the chosen padding and a mask that covers
+  // ONLY the pad area. The server-side mode is "inpaint", so this is a
+  // pure client-side preparation step.
+  let outpaintImageBlob = null;
+  let outpaintMaskBlob = null;
+  let serverMode = state.mode;
+  if (state.mode === "outpaint") {
+    if (!state.imageFile) return setStatus("upload an image first", "err");
+    const pads = {
+      top: Math.max(0, parseInt($("padTop").value, 10) || 0),
+      right: Math.max(0, parseInt($("padRight").value, 10) || 0),
+      bottom: Math.max(0, parseInt($("padBottom").value, 10) || 0),
+      left: Math.max(0, parseInt($("padLeft").value, 10) || 0),
+    };
+    if (pads.top + pads.right + pads.bottom + pads.left === 0) {
+      return setStatus("set at least one pad direction > 0", "err");
+    }
+    try {
+      [outpaintImageBlob, outpaintMaskBlob] = await buildOutpaintBlobs(state.image, pads);
+    } catch (e) {
+      return setStatus("outpaint prep failed: " + (e.message || e), "err");
+    }
+    serverMode = "inpaint"; // server-side: FLUX Fill regenerates the pad
+  }
+
   const variantsCount = Math.max(1, Math.min(8, parseInt($("variants").value, 10) || 1));
 
   const fd = new FormData();
-  if (state.imageFile) fd.append("image", state.imageFile);
-  fd.append("mode", state.mode);
+  if (outpaintImageBlob) {
+    fd.append("image", outpaintImageBlob, "outpaint_input.png");
+  } else if (state.imageFile) {
+    fd.append("image", state.imageFile);
+  }
+  fd.append("mode", serverMode);
   fd.append("prompt", prompt);
   fd.append("steps", $("steps").value);
   fd.append("guidance", $("guidance").value);
@@ -497,7 +572,11 @@ async function runEdit() {
     fd.append("style_lora", selectedLora);
     fd.append("style_lora_scale", $("styleLoraScale").value || "1.0");
   }
-  if (state.mode === "inpaint") fd.append("mask", await maskBlob(), "mask.png");
+  if (state.mode === "inpaint") {
+    fd.append("mask", await maskBlob(), "mask.png");
+  } else if (outpaintMaskBlob) {
+    fd.append("mask", outpaintMaskBlob, "outpaint_mask.png");
+  }
 
   $("run").disabled = true;
   $("abort").classList.remove("hidden");
@@ -902,6 +981,7 @@ async function loadHistoryEntry(item) {
     state.mode = item.mode;
     $("brushRow").classList.toggle("hidden", item.mode !== "inpaint");
     $("autoMaskRow").classList.toggle("hidden", item.mode !== "inpaint");
+    $("outpaintRow").classList.toggle("hidden", item.mode !== "outpaint");
     maskCanvas.style.pointerEvents = item.mode === "inpaint" ? "auto" : "none";
   }
   if (item.steps) $("steps").value = item.steps;
