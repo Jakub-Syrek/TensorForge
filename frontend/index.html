@@ -77,6 +77,12 @@
             <option value="strong">strong</option>
           </select>
         </label>
+        <label title="Upscaler used to restore the original input dimensions after diffusion. 'lanczos' = fast interpolation (legacy). 'real-esrgan 4x' = learned super-resolution that synthesizes texture detail (skin pores, fabric weave, distant foliage) instead of inventing edges from luminance gradients. Adds ~5-15s per image, ~600 MB VRAM.">upscale
+          <select id="upscale">
+            <option value="lanczos" selected>lanczos</option>
+            <option value="real_esrgan_4x">real-esrgan 4x</option>
+          </select>
+        </label>
         <label title="Number of variants to generate (different seeds, same prompt + params). 1 = direct run; 2-8 = pick the best afterwards. Worker is single-GPU so variants run sequentially.">variants <input id="variants" type="number" min="1" max="8" value="1" /></label>
       </div>
 

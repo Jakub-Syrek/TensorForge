@@ -27,6 +27,7 @@ from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_byt
 from backend.pipeline import EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress
 from backend.storage import save_variant_output
+from backend.upscale import Upscaler
 from backend.vision import VisionAnalyzer
 
 log = logging.getLogger(__name__)
@@ -39,12 +40,16 @@ class TaskWorker:
         self,
         editor: FluxEditor,
         vision: VisionAnalyzer | None = None,
+        upscaler: Upscaler | None = None,
     ) -> None:
         self.editor = editor
         # Vision is optional so existing tests can construct the worker
         # without booting Florence-2. Production wiring passes the server's
         # shared instance so the model loads once across requests.
         self.vision = vision
+        # Real-ESRGAN upscaler — also optional. When omitted the worker
+        # falls back to LANCZOS, which is the legacy behavior.
+        self.upscaler = upscaler
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
@@ -315,6 +320,7 @@ class TaskWorker:
         gen_height = int(params.get("gen_height", 1024))
         style_lora_id = params.get("style_lora_id") or None
         style_lora_scale = float(params.get("style_lora_scale", 1.0))
+        upscale_mode = params.get("upscale", "lanczos")
 
         # Resolve input: prefer parent_variant_id (pipeline mid-step) over
         # input_path (initial upload). Mid-pipeline tasks have input_path=NULL
@@ -369,9 +375,20 @@ class TaskWorker:
             raise
 
         # Generate has no original_size — the model output IS the final canvas.
-        # For edit modes, LANCZOS back to the user's upload dims.
+        # For edit modes, restore the user's upload dimensions; choice of
+        # resampler depends on the upscale setting:
+        #   - "lanczos" (default, legacy): plain LANCZOS interpolation
+        #   - "real_esrgan_4x": learned 4x upscale via Real-ESRGAN, then
+        #     LANCZOS-downscale to exact target if the original isn't a
+        #     clean 4x of the FLUX output. Synthesizes texture detail
+        #     instead of blurring.
         if original_size is not None and out.size != original_size:
-            out = out.resize(original_size, Image.Resampling.LANCZOS)
+            if upscale_mode == "real_esrgan_4x" and self.upscaler is not None:
+                out = self.upscaler.upscale_to(out, original_size)
+            else:
+                out = out.resize(original_size, Image.Resampling.LANCZOS)
+        # Sharpen still runs on top; Real-ESRGAN already produces sharp
+        # output but the user may want to push contrast further.
         out = sharpen(out, sharpen_level)
         return image_to_png_bytes(out)
 

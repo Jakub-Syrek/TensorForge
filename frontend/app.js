@@ -392,6 +392,7 @@ async function runEdit() {
   fd.append("guidance", $("guidance").value);
   if ($("seed").value) fd.append("seed", $("seed").value);
   fd.append("sharpen_level", $("sharpen").value);
+  fd.append("upscale", $("upscale").value);
   if ($("maxEdge").value) fd.append("max_edge", $("maxEdge").value);
   if (state.accelAvailable) {
     fd.append("use_accel", $("accelToggle").checked ? "true" : "false");
