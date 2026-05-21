@@ -27,6 +27,7 @@ from backend.db import SessionLocal, Task, Variant
 from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_bytes, sharpen
 from backend.pipeline import EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress
+from backend.pulid import PuLIDGenerator, PuLIDRequest
 from backend.storage import save_variant_output
 from backend.upscale import Upscaler
 from backend.vision import VisionAnalyzer
@@ -43,6 +44,7 @@ class TaskWorker:
         vision: VisionAnalyzer | None = None,
         upscaler: Upscaler | None = None,
         controlnet: ControlNetGenerator | None = None,
+        pulid: PuLIDGenerator | None = None,
     ) -> None:
         self.editor = editor
         # Vision is optional so existing tests can construct the worker
@@ -55,6 +57,9 @@ class TaskWorker:
         # ControlNet generator — optional. Required for mode="control"
         # tasks; tests don't need it.
         self.controlnet = controlnet
+        # PuLID generator — optional. Required for mode="pulid" tasks
+        # (face-preserving generation).
+        self.pulid = pulid
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
@@ -122,6 +127,8 @@ class TaskWorker:
                     output_bytes = self._render_auto_mask(t, v)
                 elif t.mode == "control":
                     output_bytes = self._render_control(t, v)
+                elif t.mode == "pulid":
+                    output_bytes = self._render_pulid(t, v)
                 else:
                     output_bytes = self._render(t, v)
             except EditAborted as exc:
@@ -364,6 +371,52 @@ class TaskWorker:
             job_progress.finish(error=str(exc))
             raise
 
+        return image_to_png_bytes(out)
+
+    def _render_pulid(self, t: Task, v: Variant) -> bytes:  # pragma: no cover — GPU + PuLID
+        """Run face-preserving generation. The face reference photo lives
+        at ``t.input_path`` (uploaded as the 'image' field — repurposed
+        as the face ID source). Prompt drives the scene; PuLID drives
+        whose face appears in it.
+        """
+        if self.pulid is None:
+            raise RuntimeError("pulid mode requires a PuLIDGenerator on TaskWorker")
+        if not t.input_path:
+            raise ValueError("pulid mode requires a face reference (uploaded as 'image')")
+
+        params = t.params or {}
+        id_scale = float(params.get("id_scale", 1.0))
+        steps = int(params.get("steps", 28))
+        guidance = float(params.get("guidance", 3.5))
+        gen_width = int(params.get("gen_width", 1024))
+        gen_height = int(params.get("gen_height", 1024))
+
+        face_image = Image.open(t.input_path)
+        face_image = ImageOps.exif_transpose(face_image)
+
+        # Same VRAM consideration as ControlNet — PuLID loads FLUX.1-dev
+        # + a 700 MB adapter + InsightFace. Release the main editor's
+        # warm state before kicking off; next non-pulid task pays the
+        # reload cost. Acceptable for a single-user desktop tool.
+        self.editor._release_intermediate_memory()
+
+        job_progress.start(total=steps, mode="pulid")
+        try:
+            req = PuLIDRequest(
+                prompt=t.prompt,
+                face_image=face_image,
+                id_scale=id_scale,
+                steps=steps,
+                guidance=guidance,
+                seed=v.seed,
+                width=gen_width,
+                height=gen_height,
+            )
+            out = self.pulid.generate(req)
+            job_progress.finish()
+        except Exception as exc:
+            job_progress.finish(error=str(exc))
+            raise
         return image_to_png_bytes(out)
 
     def _render(self, t: Task, v: Variant) -> bytes:  # pragma: no cover — GPU inference path

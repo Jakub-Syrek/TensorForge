@@ -352,6 +352,7 @@ document.querySelectorAll(".seg-btn").forEach(btn => {
     $("autoMaskRow").classList.toggle("hidden", state.mode !== "inpaint");
     $("outpaintRow").classList.toggle("hidden", state.mode !== "outpaint");
     $("controlRow").classList.toggle("hidden", state.mode !== "control");
+    $("pulidRow").classList.toggle("hidden", state.mode !== "pulid");
     maskCanvas.style.pointerEvents = state.mode === "inpaint" ? "auto" : "none";
     // Auto-adjust params only when switching to a mode with materially
     // different defaults (Qwen needs ~50 steps; Flux modes need ~28).
@@ -540,6 +541,7 @@ async function runEdit() {
   if (needsImage && !state.imageFile) return setStatus("upload an image first", "err");
   if (state.mode === "inpaint" && !state.maskDirty) return setStatus("paint a mask first", "err");
   if (state.mode === "control" && !state.imageFile) return setStatus("upload a control image first (canny / depth / pose)", "err");
+  if (state.mode === "pulid" && !state.imageFile) return setStatus("upload a face reference photo first", "err");
 
   // Outpainting reuses FLUX Fill — we build an extended canvas with the
   // original image inset by the chosen padding and a mask that covers
@@ -599,6 +601,9 @@ async function runEdit() {
   if (state.mode === "control") {
     fd.append("control_type", $("controlType").value);
     fd.append("control_scale", $("controlScale").value || "0.7");
+  }
+  if (state.mode === "pulid") {
+    fd.append("id_scale", $("idScale").value || "1.0");
   }
   if (state.mode === "inpaint") {
     fd.append("mask", await maskBlob(), "mask.png");
@@ -1011,6 +1016,7 @@ async function loadHistoryEntry(item) {
     $("autoMaskRow").classList.toggle("hidden", item.mode !== "inpaint");
     $("outpaintRow").classList.toggle("hidden", item.mode !== "outpaint");
     $("controlRow").classList.toggle("hidden", item.mode !== "control");
+    $("pulidRow").classList.toggle("hidden", item.mode !== "pulid");
     maskCanvas.style.pointerEvents = item.mode === "inpaint" ? "auto" : "none";
   }
   if (item.steps) $("steps").value = item.steps;

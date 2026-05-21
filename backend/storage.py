@@ -61,6 +61,14 @@ def save_ip_image(task_id: str, data: bytes) -> Path:
     return path
 
 
+def save_face_image(task_id: str, data: bytes) -> Path:
+    """Persist a face reference photo for PuLID identity-preserving
+    generation. Stored next to input/mask/ip_image in the task dir."""
+    path = task_dir(task_id) / "face.png"
+    path.write_bytes(data)
+    return path
+
+
 def save_variant_output(task_id: str, variant_id: str, data: bytes, ext: str = ".png") -> Path:
     path = variants_dir(task_id) / f"{variant_id}{ext}"
     path.write_bytes(data)
