@@ -54,8 +54,12 @@
         <span id="autoMaskStatus" class="muted small"></span>
       </div>
 
-      <div class="row">
+      <div class="row prompt-row">
         <textarea id="prompt" placeholder="e.g. 'replace the sky with a dramatic sunset' (Kontext) — or for inpaint: describe only what should appear inside the mask"></textarea>
+        <div class="prompt-actions">
+          <button type="button" id="expandPromptBtn" title="Qwen2.5-1.5B rewrites your short prompt into a FLUX-style description packed with lighting, composition, lens cues. ~3 GB VRAM, ~1 s on a warm model. Result replaces the textarea — undo (Ctrl+Z in the textarea) brings the original back.">✨ expand</button>
+        </div>
+        <span id="expandStatus" class="muted small"></span>
       </div>
 
       <div class="row pipeline-row">
