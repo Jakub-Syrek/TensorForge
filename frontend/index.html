@@ -41,12 +41,27 @@
           <button type="button" data-mode="qwen" class="seg-btn" title="Qwen-Image-Edit — alternative instruction edit (Qwen2-VL text encoder, ~50 steps default)">Qwen edit</button>
           <button type="button" data-mode="generate" class="seg-btn" title="FLUX.1 schnell — 4-step text-to-image, no input image needed">generate</button>
           <button type="button" data-mode="outpaint" class="seg-btn" title="Extend the canvas in any direction(s). Pad area is filled with black, then FLUX.1 Fill regenerates only the new pixels using your prompt. Reuses the Fill model — no extra VRAM.">outpaint</button>
+          <button type="button" data-mode="control" class="seg-btn" title="FLUX ControlNet (Union-Pro) — generation conditioned on a structural map. Upload a canny / depth / pose image, the model follows that geometry while filling style + texture from the prompt. ~30 GB on disk (FLUX.1-dev + ControlNet), ~8 GB VRAM under NF4. First call downloads the weights.">control</button>
         </div>
       </div>
 
       <div class="row brush-row hidden" id="brushRow">
         <label>brush <input id="brushSize" type="range" min="4" max="120" value="40" /></label>
         <button type="button" id="clearMask">clear mask</button>
+      </div>
+
+      <div class="row control-row hidden" id="controlRow">
+        <label title="Conditioning type. canny = follow edge contours. depth = follow 3D structure (depth map). pose = follow OpenPose skeleton.">control type
+          <select id="controlType">
+            <option value="canny" selected>canny (edges)</option>
+            <option value="depth">depth (3D structure)</option>
+            <option value="pose">pose (skeleton)</option>
+          </select>
+        </label>
+        <label title="ControlNet conditioning strength. 0.4-0.6 = light suggestion; 0.7-0.9 = strong adherence (default 0.7); above 1.0 = over-conditioned, output flattens. Adjust if the result ignores or over-fits the control image.">scale
+          <input id="controlScale" type="number" step="0.05" min="0" max="2" value="0.7" />
+        </label>
+        <span class="muted small">upload the pre-processed control image as input (canny edges, depth map, or pose skeleton). Use tools like controlnet_aux to generate these from a regular photo.</span>
       </div>
 
       <div class="row outpaint-row hidden" id="outpaintRow">
