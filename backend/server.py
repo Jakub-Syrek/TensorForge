@@ -49,6 +49,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend import loras, storage
+from backend.bg_remove import BackgroundRemover
 from backend.db import Task, Variant, get_session, init_db
 from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_bytes, sharpen
 from backend.intent import explain as classify_intent
@@ -74,6 +75,10 @@ vision = VisionAnalyzer()
 # Real-ESRGAN upscaler — lazy-loaded on first request that picks
 # ``upscale="real_esrgan_4x"``. ~67 MB weights, ~600 MB resident.
 upscaler = Upscaler()
+# Background removal — lazy-loaded on first /api/vision/bg_remove hit.
+# BiRefNet-general weights are ~150 MB; runs on CPU via ONNX runtime
+# so it doesn't compete with FLUX for VRAM.
+bg_remover = BackgroundRemover()
 task_worker = TaskWorker(editor, vision=vision, upscaler=upscaler)
 
 
@@ -126,6 +131,33 @@ def list_loras() -> JSONResponse:
     """List available style LoRAs for the UI dropdown. Static list — comes
     from ``backend.loras.STYLE_LORAS`` (built-ins + optional user JSON)."""
     return JSONResponse({"loras": loras.as_public_list()})
+
+
+@app.post("/api/vision/bg_remove")
+async def vision_bg_remove(
+    image: UploadFile = File(...),
+) -> Response:
+    """Remove the background from ``image``, returning a transparent-PNG.
+
+    Uses BiRefNet (via rembg) for high-quality alpha edges on hair, fur,
+    and fabric. Output is RGBA at the input's native resolution. Subject
+    isolation is per-pixel continuous, not binary — feathered edges.
+    """
+    img_bytes = await image.read()
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        img = ImageOps.exif_transpose(img)
+        img.load()
+    except (UnidentifiedImageError, OSError) as ex:
+        raise HTTPException(400, f"Could not decode image: {ex}") from ex
+    except Image.DecompressionBombError as ex:
+        raise HTTPException(413, f"Image too large: {ex}") from ex
+
+    try:
+        cutout = await asyncio.to_thread(bg_remover.remove, img)
+    except Exception as ex:
+        raise HTTPException(500, f"bg_remove failed: {ex}") from ex
+    return Response(content=image_to_png_bytes(cutout), media_type="image/png")
 
 
 @app.post("/api/vision/segment")

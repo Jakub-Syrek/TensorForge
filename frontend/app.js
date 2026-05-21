@@ -197,6 +197,54 @@ function insertIntoPrompt(text) {
 $("analyzeFastBtn").addEventListener("click", () => runAnalyze("fast"));
 $("analyzeDeepBtn").addEventListener("click", () => runAnalyze("deep"));
 
+// --- background removal (BiRefNet via rembg) -----------------------------
+// Send current input image to /api/vision/bg_remove, swap the returned
+// RGBA cutout back into the input canvas as the new working image. User
+// can then run FLUX Fill (or any mode) to put a new scene behind the
+// subject.
+async function runBgRemove() {
+  if (!state.imageFile) {
+    $("analyzeStatus").textContent = "upload an image first";
+    return;
+  }
+  const btn = $("bgRemoveBtn");
+  btn.disabled = true;
+  $("analyzeStatus").textContent = "removing background…";
+  try {
+    const fd = new FormData();
+    fd.append("image", state.imageFile);
+    const r = await fetch("/api/vision/bg_remove", { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    await new Promise((res, rej) => {
+      img.onload = res;
+      img.onerror = () => rej(new Error("decode failed"));
+      img.src = url;
+    });
+    // Replace the working input file + redraw the canvas with the cutout.
+    // The blob encodes RGBA — the canvas-wrap checkered background shows
+    // through transparent pixels so isolation is visible immediately.
+    state.imageFile = new File([blob], "cutout.png", { type: "image/png" });
+    state.image = img;
+    fitCanvases(img.naturalWidth, img.naturalHeight);
+    imgCtx.clearRect(0, 0, imgCanvas.width, imgCanvas.height);
+    imgCtx.drawImage(img, 0, 0, imgCanvas.width, imgCanvas.height);
+    maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    state.maskDirty = false;
+    $("dropHint").textContent = "cutout.png";
+    $("analyzeStatus").textContent = "background removed — subject on transparent canvas";
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    $("analyzeStatus").textContent = String(e.message || e);
+    $("analyzeStatus").classList.add("err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+$("bgRemoveBtn").addEventListener("click", runBgRemove);
+
 function fitCanvases(w, h) {
   imgCanvas.width = maskCanvas.width = w;
   imgCanvas.height = maskCanvas.height = h;
