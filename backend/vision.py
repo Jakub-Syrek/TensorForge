@@ -86,13 +86,18 @@ class VisionAnalyzer:
 
     # ----- loaders --------------------------------------------------------
 
+    # nosec B615 comments throughout — published model repos from CIDAS,
+    # facebook, google, and Salesforce are trusted upstreams. Pinning to a
+    # specific revision would block legitimate upstream fixes for a
+    # single-user desktop app; the explicit ``trust_remote_code`` flag is
+    # NOT set, so there's no remote-code path to begin with.
     def _load_clipseg(self) -> tuple[object, object]:  # pragma: no cover — needs GPU + download
         if self._clipseg is None:
             from transformers import CLIPSegForImageSegmentation, CLIPSegProcessor
 
             log.info("loading CLIPSeg (segmentation)")
-            proc = CLIPSegProcessor.from_pretrained(CLIPSEG_MODEL)
-            model = CLIPSegForImageSegmentation.from_pretrained(
+            proc = CLIPSegProcessor.from_pretrained(CLIPSEG_MODEL)  # nosec B615
+            model = CLIPSegForImageSegmentation.from_pretrained(  # nosec B615
                 CLIPSEG_MODEL, torch_dtype=self._dtype
             ).to(self._device)
             model.eval()
@@ -104,10 +109,10 @@ class VisionAnalyzer:
             from transformers import AutoImageProcessor, DetrForObjectDetection
 
             log.info("loading DETR (generic object detection)")
-            proc = AutoImageProcessor.from_pretrained(DETR_MODEL)
-            model = DetrForObjectDetection.from_pretrained(DETR_MODEL, torch_dtype=self._dtype).to(
-                self._device
-            )
+            proc = AutoImageProcessor.from_pretrained(DETR_MODEL)  # nosec B615
+            model = DetrForObjectDetection.from_pretrained(  # nosec B615
+                DETR_MODEL, torch_dtype=self._dtype
+            ).to(self._device)
             model.eval()
             self._detr = (proc, model)
         return self._detr
@@ -117,8 +122,8 @@ class VisionAnalyzer:
             from transformers import AutoProcessor, Owlv2ForObjectDetection
 
             log.info("loading OWLv2 (text-grounded detection)")
-            proc = AutoProcessor.from_pretrained(OWLV2_MODEL)
-            model = Owlv2ForObjectDetection.from_pretrained(
+            proc = AutoProcessor.from_pretrained(OWLV2_MODEL)  # nosec B615
+            model = Owlv2ForObjectDetection.from_pretrained(  # nosec B615
                 OWLV2_MODEL, torch_dtype=self._dtype
             ).to(self._device)
             model.eval()
@@ -130,8 +135,8 @@ class VisionAnalyzer:
             from transformers import BlipForConditionalGeneration, BlipProcessor
 
             log.info("loading BLIP (image captioning)")
-            proc = BlipProcessor.from_pretrained(BLIP_MODEL)
-            model = BlipForConditionalGeneration.from_pretrained(
+            proc = BlipProcessor.from_pretrained(BLIP_MODEL)  # nosec B615
+            model = BlipForConditionalGeneration.from_pretrained(  # nosec B615
                 BLIP_MODEL, torch_dtype=self._dtype
             ).to(self._device)
             model.eval()
@@ -140,7 +145,9 @@ class VisionAnalyzer:
 
     # ----- public API -----------------------------------------------------
 
-    def caption(self, image: Image.Image, level: str = "detailed") -> str:
+    def caption(  # pragma: no cover — exercises BLIP weights / GPU
+        self, image: Image.Image, level: str = "detailed"
+    ) -> str:
         """Return a textual description of the scene.
 
         BLIP-large generates fluent one-or-two-sentence captions out of the
@@ -159,7 +166,7 @@ class VisionAnalyzer:
             out = model.generate(**inputs, max_new_tokens=64, num_beams=4)
         return proc.decode(out[0], skip_special_tokens=True).strip()
 
-    def detect(
+    def detect(  # pragma: no cover — dispatches to GPU paths
         self,
         image: Image.Image,
         text: str | None = None,
@@ -174,7 +181,9 @@ class VisionAnalyzer:
             return self._detect_grounded(image, text)
         return self._detect_generic(image)
 
-    def _detect_generic(self, image: Image.Image) -> list[DetectedObject]:
+    def _detect_generic(  # pragma: no cover — DETR forward pass
+        self, image: Image.Image
+    ) -> list[DetectedObject]:
         rgb = ensure_rgb(image)
         proc, model = self._load_detr()
         inputs = proc(images=rgb, return_tensors="pt").to(self._device)
@@ -199,7 +208,9 @@ class VisionAnalyzer:
             )
         ]
 
-    def _detect_grounded(self, image: Image.Image, text: str) -> list[DetectedObject]:
+    def _detect_grounded(  # pragma: no cover — OWLv2 forward pass
+        self, image: Image.Image, text: str
+    ) -> list[DetectedObject]:
         rgb = ensure_rgb(image)
         proc, model = self._load_owlv2()
         # OWLv2 takes a list of text queries per image. We accept a single
@@ -228,7 +239,9 @@ class VisionAnalyzer:
             )
         ]
 
-    def segment(self, image: Image.Image, text: str) -> Image.Image:
+    def segment(  # pragma: no cover — CLIPSeg forward pass
+        self, image: Image.Image, text: str
+    ) -> Image.Image:
         """Text-prompted segmentation via CLIPSeg.
 
         Returns a single L-mode PIL image at the input's resolution:
