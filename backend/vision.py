@@ -44,6 +44,36 @@ from dataclasses import dataclass
 import torch
 from PIL import Image, ImageDraw
 
+# Eager top-level imports of every transformers class this module touches.
+# Transformers 5.x's lazy-import resolver is unreliable in long-lived
+# processes: after enough sibling Auto* / direct class loads, subsequent
+# ``from transformers import X`` calls can raise ImportError even for names
+# that exist — we've hit AutoImageProcessor, AutoModelForImageTextToText,
+# AutoModelForObjectDetection, and BlipForConditionalGeneration in
+# successive sessions. Pulling them all up here forces every name to
+# materialize once, at module load, while the resolver is still in a
+# fresh state. Loaders below reference these symbols from module scope
+# and never re-import from transformers themselves.
+#
+# Wrapped in try/except because the test suite stubs torch (see
+# tests/conftest.py) and transformers' import-time torch probe fails
+# under the stub. Production always has real torch; the loaders are all
+# pragma'd as not-covered, so tests never touch these symbols.
+try:
+    from transformers import (
+        AutoModelForImageTextToText,
+        AutoModelForObjectDetection,
+        AutoModelForZeroShotObjectDetection,
+        AutoProcessor,
+        CLIPSegForImageSegmentation,
+    )
+except (ImportError, ModuleNotFoundError):  # pragma: no cover — test-only path
+    AutoModelForImageTextToText = None  # type: ignore[assignment]
+    AutoModelForObjectDetection = None  # type: ignore[assignment]
+    AutoModelForZeroShotObjectDetection = None  # type: ignore[assignment]
+    AutoProcessor = None  # type: ignore[assignment]
+    CLIPSegForImageSegmentation = None  # type: ignore[assignment]
+
 from backend.imgutils import ensure_rgb
 
 log = logging.getLogger(__name__)
@@ -114,14 +144,6 @@ class VisionAnalyzer:
     # NOT set, so there's no remote-code path to begin with.
     def _load_clipseg(self) -> tuple[object, object]:  # pragma: no cover — needs GPU + download
         if self._clipseg is None:
-            # AutoProcessor routes CLIPSeg to CLIPSegProcessor cleanly.
-            # No AutoModelFor* class exists for CLIPSeg (segmentation
-            # routing in 5.x only knows DETR-family models), so the model
-            # side has to use the direct class import. Doing this load
-            # first — before AutoProcessor poisons that path for direct
-            # imports — keeps it reliable.
-            from transformers import AutoProcessor, CLIPSegForImageSegmentation
-
             log.info("loading CLIPSeg (segmentation)")
             proc = AutoProcessor.from_pretrained(CLIPSEG_MODEL)  # nosec B615
             model = CLIPSegForImageSegmentation.from_pretrained(  # nosec B615
@@ -132,15 +154,7 @@ class VisionAnalyzer:
         return self._clipseg
 
     def _load_detr(self) -> tuple[object, object]:  # pragma: no cover — needs GPU + download
-        # All loaders use AutoProcessor + AutoModelFor* rather than direct
-        # class imports. Transformers 5.x has a lazy-resolver bug where
-        # importing a sibling Auto*/direct class can poison the registry
-        # so subsequent ``from transformers import X`` raises even when X
-        # exists. Going through the auto-registry is immune because the
-        # actual class is resolved from config at call time.
         if self._detr is None:
-            from transformers import AutoModelForObjectDetection, AutoProcessor
-
             log.info("loading DETR (generic object detection)")
             proc = AutoProcessor.from_pretrained(DETR_MODEL)  # nosec B615
             model = AutoModelForObjectDetection.from_pretrained(  # nosec B615
@@ -152,8 +166,6 @@ class VisionAnalyzer:
 
     def _load_owlv2(self) -> tuple[object, object]:  # pragma: no cover — needs GPU + download
         if self._owlv2 is None:
-            from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
-
             log.info("loading OWLv2 (text-grounded detection)")
             proc = AutoProcessor.from_pretrained(OWLV2_MODEL)  # nosec B615
             model = AutoModelForZeroShotObjectDetection.from_pretrained(  # nosec B615
@@ -184,8 +196,6 @@ class VisionAnalyzer:
         order can poison the lazy resolver. Auto* routes through the
         config-driven dispatch table and is immune.
         """
-        from transformers import AutoModelForImageTextToText, AutoProcessor
-
         if depth == "deep":
             if self._blip_deep is None:
                 log.info("loading BLIP-2 OPT-2.7B (deep captioning)")

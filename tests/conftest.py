@@ -8,6 +8,7 @@ imports backend.*. The stub only carries the attributes our code touches.
 
 from __future__ import annotations
 
+import importlib.machinery
 import sys
 import types
 
@@ -16,6 +17,14 @@ def _install_torch_stub() -> None:
     if "torch" in sys.modules:
         return
     fake = types.ModuleType("torch")
+    # transformers imports trigger ``importlib.util.find_spec('torch')`` to
+    # decide whether to wire up its torch-backed paths. A ModuleType with
+    # __spec__ unset (default None) makes find_spec raise ValueError, which
+    # aborts ``from transformers import X`` at module import time. Give the
+    # stub a real ModuleSpec so the probe succeeds; transformers then
+    # discovers there's no actual functionality and stays in the no-torch
+    # code path, which is what we want for these routing tests.
+    fake.__spec__ = importlib.machinery.ModuleSpec("torch", loader=None)
     fake.__version__ = "stub"
     fake.bfloat16 = object()
     fake.float32 = object()
