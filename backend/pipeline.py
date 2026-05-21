@@ -317,6 +317,15 @@ class FluxEditor:
         else:
             flat = torch.load(path, map_location="cpu", weights_only=True)
 
+        # Some community ports wrap the actual weights under a top-level
+        # key ("state_dict", "module", "model"). If we see exactly one of
+        # those and its value is a dict, unwrap once.
+        if isinstance(flat, dict) and len(flat) == 1:
+            only_key = next(iter(flat))
+            if only_key in {"state_dict", "module", "model"} and isinstance(flat[only_key], dict):
+                log.info("unwrapping IP-Adapter state dict from '%s'", only_key)
+                flat = flat[only_key]
+
         image_proj: dict[str, torch.Tensor] = {}
         ip_adapter: dict[str, torch.Tensor] = {}
         unknown: list[str] = []
@@ -346,11 +355,27 @@ class FluxEditor:
             )
 
         if not image_proj or not ip_adapter:
+            # Dump enough information so the next iteration of the remapper
+            # has actual schema evidence to work from, not guesses.
+            all_keys = list(flat.keys())
+            unique_prefixes = sorted({k.split(".")[0] for k in all_keys})
+            sample = all_keys[:30]
+            log.error(
+                "IP-Adapter remapper found no recognizable keys. Total "
+                "keys: %d. Unique top-level prefixes: %s. Sample (first "
+                "30 keys): %s",
+                len(all_keys),
+                unique_prefixes,
+                sample,
+            )
             raise RuntimeError(
                 "IP-Adapter remapper could not infer state-dict structure "
                 f"(image_proj keys: {len(image_proj)}, ip_adapter keys: "
-                f"{len(ip_adapter)}). The InstantX schema may have changed; "
-                f"check {IP_ADAPTER_REPO} for the current layout."
+                f"{len(ip_adapter)}). Schema dumped to server log — "
+                f"check the unique top-level prefixes and adjust the "
+                f"heuristics in backend/pipeline.py "
+                f"`_load_ip_adapter_instantx_remapped`. Upstream: "
+                f"{IP_ADAPTER_REPO}"
             )
 
         log.info(
