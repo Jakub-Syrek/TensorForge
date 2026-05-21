@@ -1,4 +1,4 @@
-# AiPictureModifier · Usage guide
+# TensorForge · Usage guide
 
 Hands-on reference for both edit modes. Quick rule of thumb: **start with
 global edit; reach for inpaint only when you need region precision**.

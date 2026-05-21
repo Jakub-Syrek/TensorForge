@@ -1,7 +1,7 @@
 [project]
-name = "aipicturemodifier"
-version = "0.1.0"
-description = "FLUX-based prompt-driven image editor (Kontext + Fill) for RTX 5080."
+name = "tensorforge"
+version = "0.2.0"
+description = "Local creative ML image workstation — FLUX, ControlNet, IP-Adapter, PuLID, Real-ESRGAN — RTX 5080 optimized."
 requires-python = ">=3.11"
 
 [tool.ruff]

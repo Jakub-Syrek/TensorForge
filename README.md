@@ -1,6 +1,6 @@
-# AiPictureModifier
+# TensorForge
 
-[![CI](https://github.com/Jakub-Syrek/AiPictureModifier/actions/workflows/ci.yml/badge.svg)](https://github.com/Jakub-Syrek/AiPictureModifier/actions/workflows/ci.yml)
+[![CI](https://github.com/Jakub-Syrek/TensorForge/actions/workflows/ci.yml/badge.svg)](https://github.com/Jakub-Syrek/TensorForge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11_|_3.12-blue.svg)](https://www.python.org/)
 [![PyTorch nightly cu128](https://img.shields.io/badge/pytorch-nightly%20cu128-ee4c2c.svg)](https://pytorch.org/get-started/locally/)

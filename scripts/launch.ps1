@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Launch the AiPictureModifier server with a chosen performance profile.
+    Launch the TensorForge server with a chosen performance profile.
 
 .DESCRIPTION
     Picks the right combination of FLUX_QUANT / FLUX_MAX_EDGE / FLUX_ACCEL_*
@@ -85,7 +85,7 @@ function Get-OrDefault($value, $fallback) {
 }
 
 function Show-ProfileTable {
-    Write-Section "AiPictureModifier - profile comparison"
+    Write-Section "TensorForge - profile comparison"
     Write-Host ""
     Write-Host "  profile   step time   VRAM      power   per-edit    quality"      -ForegroundColor Yellow
     Write-Host "  -------   ---------   ----      -----   --------    -------"      -ForegroundColor DarkGray

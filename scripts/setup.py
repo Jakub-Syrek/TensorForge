@@ -1,4 +1,4 @@
-"""One-shot setup for AiPictureModifier.
+"""One-shot setup for TensorForge.
 
 Detects Blackwell (sm_120 — RTX 50xx) and installs the PyTorch nightly cu128
 build that actually ships kernels for that architecture. Stable PyTorch only
