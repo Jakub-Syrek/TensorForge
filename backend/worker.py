@@ -25,6 +25,7 @@ from backend import storage
 from backend.controlnet import ControlNetGenerator, ControlRequest
 from backend.db import SessionLocal, Task, Variant
 from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_bytes, sharpen
+from backend.ipa import IPAdapterGenerator, IPARequest
 from backend.pipeline import EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress
 from backend.pulid import PuLIDGenerator, PuLIDRequest
@@ -45,6 +46,7 @@ class TaskWorker:
         upscaler: Upscaler | None = None,
         controlnet: ControlNetGenerator | None = None,
         pulid: PuLIDGenerator | None = None,
+        ipa: IPAdapterGenerator | None = None,
     ) -> None:
         self.editor = editor
         # Vision is optional so existing tests can construct the worker
@@ -60,6 +62,9 @@ class TaskWorker:
         # PuLID generator — optional. Required for mode="pulid" tasks
         # (face-preserving generation).
         self.pulid = pulid
+        # IP-Adapter generator (InstantX custom stack) — optional.
+        # Required for mode="ipa" tasks (reference-image style transfer).
+        self.ipa = ipa
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
@@ -129,6 +134,8 @@ class TaskWorker:
                     output_bytes = self._render_control(t, v)
                 elif t.mode == "pulid":
                     output_bytes = self._render_pulid(t, v)
+                elif t.mode == "ipa":
+                    output_bytes = self._render_ipa(t, v)
                 else:
                     output_bytes = self._render(t, v)
             except EditAborted as exc:
@@ -419,6 +426,48 @@ class TaskWorker:
             raise
         return image_to_png_bytes(out)
 
+    def _render_ipa(self, t: Task, v: Variant) -> bytes:  # pragma: no cover — GPU + IPA
+        """Run InstantX FLUX IP-Adapter generation. ``t.input_path`` is the
+        reference image (uploaded as 'image'); ``t.prompt`` drives the new
+        scene; the reference biases style/composition via IP-Adapter."""
+        if self.ipa is None:
+            raise RuntimeError("ipa mode requires an IPAdapterGenerator on TaskWorker")
+        if not t.input_path:
+            raise ValueError("ipa mode requires a reference image (uploaded as 'image')")
+
+        params = t.params or {}
+        ip_scale = float(params.get("ip_scale", 0.7))
+        steps = int(params.get("steps", 24))
+        guidance = float(params.get("guidance", 3.5))
+        gen_width = int(params.get("gen_width", 1024))
+        gen_height = int(params.get("gen_height", 1024))
+
+        ref_image = Image.open(t.input_path)
+        ref_image = ImageOps.exif_transpose(ref_image)
+
+        # Same VRAM dance as ControlNet / PuLID — release the main
+        # editor's warm state before loading the heavy IPA pipeline.
+        self.editor._release_intermediate_memory()
+
+        job_progress.start(total=steps, mode="ipa")
+        try:
+            req = IPARequest(
+                prompt=t.prompt,
+                ref_image=ref_image,
+                ip_scale=ip_scale,
+                steps=steps,
+                guidance=guidance,
+                seed=v.seed,
+                width=gen_width,
+                height=gen_height,
+            )
+            out = self.ipa.generate(req)
+            job_progress.finish()
+        except Exception as exc:
+            job_progress.finish(error=str(exc))
+            raise
+        return image_to_png_bytes(out)
+
     def _render(self, t: Task, v: Variant) -> bytes:  # pragma: no cover — GPU inference path
         params = t.params or {}
         max_edge = int(params.get("max_edge", 1024))
@@ -431,15 +480,8 @@ class TaskWorker:
         style_lora_id = params.get("style_lora_id") or None
         style_lora_scale = float(params.get("style_lora_scale", 1.0))
         upscale_mode = params.get("upscale", "lanczos")
-        # IP-Adapter: optional reference image stored on disk via the
-        # /api/tasks upload path. Loaded lazily here so requests without
-        # an ip_image don't pay the disk-read cost.
-        ip_image_path = params.get("ip_image_path") or None
-        ip_image = None
-        if ip_image_path:
-            ip_image = Image.open(ip_image_path)
-            ip_image = ImageOps.exif_transpose(ip_image)
-        ip_scale = float(params.get("ip_scale", 0.7))
+        # IP-Adapter is its own pipeline path (mode="ipa", see
+        # _render_ipa) — no overlay on Kontext / schnell anymore.
 
         # Resolve input: prefer parent_variant_id (pipeline mid-step) over
         # input_path (initial upload). Mid-pipeline tasks have input_path=NULL
@@ -483,8 +525,6 @@ class TaskWorker:
                 use_accel=use_accel,
                 style_lora_id=style_lora_id,
                 style_lora_scale=style_lora_scale,
-                ip_adapter_image=ip_image,
-                ip_adapter_scale=ip_scale,
             )
             out = self.editor.edit(req)
             job_progress.finish()

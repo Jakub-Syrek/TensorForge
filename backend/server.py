@@ -54,6 +54,7 @@ from backend.controlnet import UNION_MODES, ControlNetGenerator
 from backend.db import Task, Variant, get_session, init_db
 from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_bytes, sharpen
 from backend.intent import explain as classify_intent
+from backend.ipa import IPAdapterGenerator
 from backend.pipeline import QUANT_MODE, EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress, query_gpu_stats
 from backend.prompt_rewriter import PromptRewriter
@@ -95,8 +96,19 @@ controlnet = ControlNetGenerator()
 # (FLUX.1-dev base + PuLID adapter + ID encoder). Cannot coexist with
 # warm Kontext on 16 GB — worker releases editor state before loading.
 pulid = PuLIDGenerator()
+# IP-Adapter (InstantX FLUX) — image-as-prompt style transfer. Uses
+# their vendored custom pipeline + attention processors. ~25 GB disk
+# (FLUX.1-dev shared with ControlNet / PuLID, + ~1 GB adapter, + ~1.5
+# GB SigLIP encoder). ~8 GB VRAM under NF4. Cannot coexist with warm
+# Kontext / ControlNet / PuLID on 16 GB.
+ipa = IPAdapterGenerator()
 task_worker = TaskWorker(
-    editor, vision=vision, upscaler=upscaler, controlnet=controlnet, pulid=pulid
+    editor,
+    vision=vision,
+    upscaler=upscaler,
+    controlnet=controlnet,
+    pulid=pulid,
+    ipa=ipa,
 )
 
 
@@ -409,7 +421,6 @@ async def create_task(
     style_lora: str | None = Form(None),
     style_lora_scale: float = Form(1.0),
     upscale: str = Form("lanczos"),
-    ip_image: UploadFile | None = File(None),
     ip_scale: float = Form(0.7),
     control_type: str = Form("canny"),
     control_scale: float = Form(0.7),
@@ -428,7 +439,16 @@ async def create_task(
         the reference face photo; ``prompt`` drives the scene, PuLID
         keeps the face recognizable across stylization.
     """
-    valid_modes = {"kontext", "inpaint", "qwen", "generate", "auto", "control", "pulid"}
+    valid_modes = {
+        "kontext",
+        "inpaint",
+        "qwen",
+        "generate",
+        "auto",
+        "control",
+        "pulid",
+        "ipa",
+    }
     if mode not in valid_modes:
         raise HTTPException(400, f"mode must be one of {sorted(valid_modes)}, got {mode!r}")
     if not prompt.strip():
@@ -445,6 +465,8 @@ async def create_task(
             )
     if mode == "pulid" and image is None:
         raise HTTPException(400, "pulid requires a face reference (uploaded as 'image')")
+    if mode == "ipa" and image is None:
+        raise HTTPException(400, "ipa requires a reference image (uploaded as 'image')")
     clamped_control_scale = max(0.0, min(2.0, float(control_scale)))
     clamped_id_scale = max(0.0, min(2.0, float(id_scale)))
 
@@ -524,7 +546,6 @@ async def create_task(
                 "style_lora_id": resolved_style_id,
                 "style_lora_scale": clamped_style_scale,
                 "upscale": upscale,
-                "ip_image_path": None,  # populated below if uploaded
                 "ip_scale": max(0.0, min(2.0, float(ip_scale))),
                 "control_type": control_type,
                 "control_scale": clamped_control_scale,
@@ -540,14 +561,6 @@ async def create_task(
         if mode == "inpaint" and mask is not None:
             mask_bytes = await mask.read()
             t.mask_path = str(storage.save_mask(t.id, mask_bytes))
-        if ip_image is not None:
-            ip_bytes = await ip_image.read()
-            ip_path = storage.save_ip_image(t.id, ip_bytes)
-            # JSON column needs a fresh dict assignment to register the
-            # mutation with SQLAlchemy (no MutableDict configured).
-            new_params = dict(t.params)
-            new_params["ip_image_path"] = str(ip_path)
-            t.params = new_params
 
         for sd in seeds:
             s.add(Variant(task_id=t.id, seed=sd))

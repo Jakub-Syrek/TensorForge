@@ -52,18 +52,9 @@ def save_mask(task_id: str, data: bytes) -> Path:
     return path
 
 
-def save_ip_image(task_id: str, data: bytes) -> Path:
-    """Persist a reference image for IP-Adapter conditioning. Lives next
-    to the input/mask so a delete_task_dir wipes it alongside everything
-    else."""
-    path = task_dir(task_id) / "ip_image.png"
-    path.write_bytes(data)
-    return path
-
-
 def save_face_image(task_id: str, data: bytes) -> Path:
     """Persist a face reference photo for PuLID identity-preserving
-    generation. Stored next to input/mask/ip_image in the task dir."""
+    generation. Stored next to the input/mask in the task dir."""
     path = task_dir(task_id) / "face.png"
     path.write_bytes(data)
     return path

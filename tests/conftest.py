@@ -28,6 +28,41 @@ def _install_torch_stub() -> None:
     fake.__version__ = "stub"
     fake.bfloat16 = object()
     fake.float32 = object()
+    fake.dtype = type
+    fake.Tensor = type("Tensor", (), {})
+
+    def _inference_mode(*args, **kwargs):
+        """Stub matching ``torch.inference_mode()`` used as a decorator."""
+
+        def _decorate(fn):
+            return fn
+
+        return _decorate
+
+    fake.inference_mode = _inference_mode
+    fake.no_grad = _inference_mode
+    fake.load = lambda *a, **k: {}  # pragma: no cover — stub never exercised
+
+    nn = types.ModuleType("torch.nn")
+
+    class _StubModule:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, *args, **kwargs):  # pragma: no cover
+            raise RuntimeError("torch.nn stub: forward called in tests")
+
+        def to(self, *args, **kwargs):
+            return self
+
+    nn.Module = _StubModule
+    nn.Linear = _StubModule
+    nn.GELU = _StubModule
+    nn.LayerNorm = _StubModule
+    nn.Sequential = _StubModule
+    nn.ModuleList = _StubModule
+    fake.nn = nn
+    sys.modules["torch.nn"] = nn
 
     class _Cuda:
         @staticmethod

@@ -48,13 +48,10 @@ Mode = Literal["kontext", "inpaint", "qwen", "generate"]
 QWEN_EDIT_MODEL = "Qwen/Qwen-Image-Edit"
 SCHNELL_MODEL = "black-forest-labs/FLUX.1-schnell"
 
-# IP-Adapter for FLUX — image-as-prompt augmentation. Drop a reference
-# image, the model inherits its style and composition without needing
-# verbal description. Hosted by InstantX, ~1 GB additional VRAM, works
-# on both schnell and kontext (and the base FLUX.1-dev that ControlNet
-# uses — but that's a separate pipeline).
-IP_ADAPTER_REPO = "InstantX/FLUX.1-dev-IP-Adapter"
-IP_ADAPTER_WEIGHT = "ip-adapter.bin"
+# IP-Adapter integration lives in backend/ipa.py — it uses InstantX's
+# custom pipeline class (vendored under backend/ipa_vendored/) instead
+# of diffusers' standard ``pipe.load_ip_adapter`` machinery, which
+# rejects the InstantX state-dict layout. See that module for details.
 
 
 class EditAborted(RuntimeError):
@@ -111,13 +108,6 @@ class EditRequest:
     # adapter via diffusers' multi-adapter mechanism. None = no style bias.
     style_lora_id: str | None = None
     style_lora_scale: float = 1.0
-    # Optional IP-Adapter reference image. When set, FLUX inherits visual
-    # style / composition from this image alongside the prompt — useful
-    # when an aesthetic is hard to describe in words. Loaded lazily on
-    # first use; the per-request scale (0-2, ~0.7 typical) controls how
-    # strongly the reference biases the output.
-    ip_adapter_image: Image.Image | None = None
-    ip_adapter_scale: float = 0.7
 
 
 class FluxEditor:
@@ -134,10 +124,6 @@ class FluxEditor:
         # that pipe. Keyed by ``id(pipe)`` so pipes are tracked even though
         # they're plain objects (no hashable identity beyond that).
         self._loaded_style_loras: dict[int, set[str]] = {}
-        # Per-pipeline flag tracking whether the IP-Adapter has been loaded
-        # onto that pipe. Loading is one-shot and ~1 GB; toggling per
-        # request is done via ``set_ip_adapter_scale(0)`` instead.
-        self._ip_adapter_loaded: set[int] = set()
 
     def _load_kontext(self):  # pragma: no cover — requires GPU + 24 GB model
         from diffusers import FluxKontextPipeline
@@ -241,208 +227,6 @@ class FluxEditor:
             torch_dtype=self._dtype,
         )
 
-    def _ensure_ip_adapter_loaded(self, pipe) -> None:  # pragma: no cover — GPU + download
-        """Load the IP-Adapter weights onto ``pipe`` on first use.
-
-        Subsequent requests reuse the warm adapter — toggling between
-        IP-Adapter-on and IP-Adapter-off is done by setting the scale
-        to 0 (effectively a no-op), not by unloading.
-
-        Catches the well-known schema mismatch between
-        ``InstantX/FLUX.1-dev-IP-Adapter`` (which ships weights with flat
-        keys: ``proj_in.*``, ``to_k_ip.*``, etc.) and diffusers'
-        ``load_ip_adapter`` (which expects top-level ``image_proj`` +
-        ``ip_adapter`` namespaces). When that mismatch fires, raise a
-        ``RuntimeError`` with a human-readable message so the API layer
-        can surface it cleanly instead of dumping ``KeyError: 'image_proj'``
-        at the user.
-        """
-        pipe_id = id(pipe)
-        if pipe_id in self._ip_adapter_loaded:
-            return
-        log.info("loading IP-Adapter weights onto %s", type(pipe).__name__)
-        # nosec B615 — InstantX is a trusted upstream; pinning a revision
-        # would block legit fixes for a single-user desktop app.
-        try:
-            pipe.load_ip_adapter(  # nosec B615
-                IP_ADAPTER_REPO,
-                weight_name=IP_ADAPTER_WEIGHT,
-            )
-        except (KeyError, ValueError, RuntimeError) as exc:
-            msg = str(exc)
-            if "image_proj" not in msg and "ip_adapter" not in msg:
-                raise
-            log.warning(
-                "standard load_ip_adapter failed with schema error (%s); "
-                "falling back to InstantX state-dict remapper",
-                exc,
-            )
-            self._load_ip_adapter_instantx_remapped(pipe)
-
-        self._ip_adapter_loaded.add(pipe_id)
-
-    def _load_ip_adapter_instantx_remapped(self, pipe) -> None:  # pragma: no cover — GPU
-        """Manual loader for InstantX/FLUX.1-dev-IP-Adapter weights.
-
-        InstantX ships a flat state dict (``image_proj_model.*`` + per-block
-        ``transformer_blocks.X.attn.to_k_ip.*`` / ``to_v_ip.*``) while
-        diffusers' FLUX IP-Adapter loader expects keys grouped under
-        top-level ``image_proj`` / ``ip_adapter`` buckets. We download
-        the file, group keys by prefix, and pass the remapped dict to
-        ``pipe.load_ip_adapter`` via the
-        ``pretrained_model_name_or_path_or_dict`` slot (diffusers accepts
-        a state-dict in addition to a path string).
-
-        Heuristic key buckets:
-          image_proj  <- image_proj_model.*, proj.*, image_proj.*
-          ip_adapter  <- ip_adapter.*, *.to_k_ip.*, *.to_v_ip.*, *._ip.*
-
-        Anything that doesn't fit is logged at WARNING level. If either
-        bucket ends up empty we bail with a clear error pointing the
-        user at the upstream repo.
-        """
-        import torch
-        from huggingface_hub import hf_hub_download
-
-        # nosec B615 — same trust-policy comment as the standard loader.
-        path = hf_hub_download(  # nosec B615
-            repo_id=IP_ADAPTER_REPO,
-            filename=IP_ADAPTER_WEIGHT,
-        )
-
-        if path.endswith(".safetensors"):
-            from safetensors.torch import load_file
-
-            flat = load_file(path)
-        else:
-            flat = torch.load(path, map_location="cpu", weights_only=True)
-
-        # Some community ports wrap the actual weights under a top-level
-        # key ("state_dict", "module", "model"). If we see exactly one of
-        # those and its value is a dict, unwrap once.
-        if isinstance(flat, dict) and len(flat) == 1:
-            only_key = next(iter(flat))
-            if only_key in {"state_dict", "module", "model"} and isinstance(flat[only_key], dict):
-                log.info("unwrapping IP-Adapter state dict from '%s'", only_key)
-                flat = flat[only_key]
-
-        # InstantX/FLUX.1-dev-IP-Adapter actually ships in the
-        # diffusers-friendly nested layout:
-        #   {"image_proj": {"proj.0.weight": ..., ...},
-        #    "ip_adapter": {"0.to_k_ip.weight": ..., ...}}
-        # The standard ``pipe.load_ip_adapter()`` still rejects it with
-        # "Required keys missing" because its internal validator looks
-        # for FLAT keys ("image_proj.proj.0.weight") rather than the
-        # nested dicts. Detect that layout and unwrap before flattening.
-        image_proj: dict[str, torch.Tensor] = {}
-        ip_adapter: dict[str, torch.Tensor] = {}
-
-        if (
-            isinstance(flat, dict)
-            and isinstance(flat.get("image_proj"), dict)
-            and isinstance(flat.get("ip_adapter"), dict)
-        ):
-            image_proj = dict(flat["image_proj"])
-            ip_adapter = dict(flat["ip_adapter"])
-            log.info(
-                "IP-Adapter file is in nested {image_proj, ip_adapter} "
-                "layout (image_proj=%d keys, ip_adapter=%d keys) — "
-                "flattening with dotted joins for diffusers' validator",
-                len(image_proj),
-                len(ip_adapter),
-            )
-        else:
-            # Older / community variants ship a flat layout — fall back to
-            # the heuristic prefix bucketer.
-            unknown: list[str] = []
-            for key, value in flat.items():
-                if key.startswith("image_proj_model."):
-                    image_proj[key[len("image_proj_model.") :]] = value
-                elif key.startswith("image_proj."):
-                    image_proj[key[len("image_proj.") :]] = value
-                elif key.startswith("proj."):
-                    image_proj[key] = value
-                elif key.startswith("ip_adapter."):
-                    ip_adapter[key[len("ip_adapter.") :]] = value
-                elif "to_k_ip" in key or "to_v_ip" in key or "_ip." in key:
-                    ip_adapter[key] = value
-                else:
-                    unknown.append(key)
-            if unknown:
-                log.warning(
-                    "IP-Adapter remapper: %d keys with unrecognized prefix "
-                    "were dropped (first 5: %s)",
-                    len(unknown),
-                    unknown[:5],
-                )
-
-        if not image_proj or not ip_adapter:
-            # Dump enough information so the next iteration of the remapper
-            # has actual schema evidence to work from, not guesses.
-            all_keys = list(flat.keys())
-            unique_prefixes = sorted({k.split(".")[0] for k in all_keys})
-            sample = all_keys[:30]
-            log.error(
-                "IP-Adapter remapper found no recognizable keys. Total "
-                "keys: %d. Unique top-level prefixes: %s. Sample (first "
-                "30 keys): %s",
-                len(all_keys),
-                unique_prefixes,
-                sample,
-            )
-            raise RuntimeError(
-                "IP-Adapter remapper could not infer state-dict structure "
-                f"(image_proj keys: {len(image_proj)}, ip_adapter keys: "
-                f"{len(ip_adapter)}). Schema dumped to server log — "
-                f"check the unique top-level prefixes and adjust the "
-                f"heuristics in backend/pipeline.py "
-                f"`_load_ip_adapter_instantx_remapped`. Upstream: "
-                f"{IP_ADAPTER_REPO}"
-            )
-
-        # Diffusers' validator looks for FLAT keys with dotted prefixes,
-        # not the nested {image_proj: {...}, ip_adapter: {...}} layout.
-        # Build the flat dict it expects.
-        flat_state_dict: dict[str, torch.Tensor] = {}
-        for k, v in image_proj.items():
-            flat_state_dict[f"image_proj.{k}"] = v
-        for k, v in ip_adapter.items():
-            flat_state_dict[f"ip_adapter.{k}"] = v
-
-        log.info(
-            "IP-Adapter remapped to flat layout: %d total keys (image_proj=%d, ip_adapter=%d)",
-            len(flat_state_dict),
-            len(image_proj),
-            len(ip_adapter),
-        )
-
-        pipe.load_ip_adapter(flat_state_dict, weight_name=None)
-
-    def _apply_ip_adapter(  # pragma: no cover — GPU pipe
-        self,
-        pipe,
-        ip_image: Image.Image | None,
-        scale: float,
-    ) -> Image.Image | None:
-        """Configure the IP-Adapter for one request and return the image
-        to pass into the pipe call (or None if disabled).
-
-        scale=0 OR ip_image=None -> set adapter scale to 0 (effectively
-        disables conditioning without unloading) and return None.
-        Otherwise load the adapter (idempotent), set the scale, return
-        the image so the caller passes it to ``pipe(..., ip_adapter_image=img)``.
-        """
-        if ip_image is None or scale <= 0:
-            # Only zero the scale if the adapter was previously loaded —
-            # calling set_ip_adapter_scale on a pipe that never loaded
-            # one raises. Tracking via _ip_adapter_loaded covers this.
-            if id(pipe) in self._ip_adapter_loaded:
-                pipe.set_ip_adapter_scale(0.0)
-            return None
-        self._ensure_ip_adapter_loaded(pipe)
-        pipe.set_ip_adapter_scale(scale)
-        return ensure_rgb(ip_image)
-
     ACCEL_ADAPTER_NAME = "accel"
 
     def _apply_accel(self, pipe) -> None:  # pragma: no cover — needs diffusers pipe
@@ -524,11 +308,7 @@ class FluxEditor:
         # empty for this pipe, the stack is already clean and the call
         # is unnecessary.
         pipe_id = id(pipe)
-        ever_loaded = (
-            self.accel is not None
-            or pipe_id in self._loaded_style_loras
-            or pipe_id in self._ip_adapter_loaded
-        )
+        ever_loaded = self.accel is not None or pipe_id in self._loaded_style_loras
         if not ever_loaded:
             return
         with contextlib.suppress(ValueError, RuntimeError, KeyError, AttributeError):
@@ -613,10 +393,6 @@ class FluxEditor:
                     style=style,
                     style_scale=req.style_lora_scale,
                 )
-                ip_img = self._apply_ip_adapter(
-                    self.kontext, req.ip_adapter_image, req.ip_adapter_scale
-                )
-                kontext_kwargs = {} if ip_img is None else {"ip_adapter_image": ip_img}
                 result = self.kontext(
                     prompt=req.prompt,
                     image=image,
@@ -624,7 +400,6 @@ class FluxEditor:
                     guidance_scale=req.guidance,
                     generator=generator,
                     callback_on_step_end=_on_step_end,
-                    **kontext_kwargs,
                 )
                 return result.images[0]
 
@@ -668,10 +443,6 @@ class FluxEditor:
                     style=style,
                     style_scale=req.style_lora_scale,
                 )
-                ip_img = self._apply_ip_adapter(
-                    self.schnell, req.ip_adapter_image, req.ip_adapter_scale
-                )
-                schnell_kwargs = {} if ip_img is None else {"ip_adapter_image": ip_img}
                 # schnell's guidance is baked in via distillation; passing
                 # guidance_scale=0 is the recommended sentinel.
                 result = self.schnell(
@@ -682,7 +453,6 @@ class FluxEditor:
                     guidance_scale=0.0,
                     generator=generator,
                     callback_on_step_end=_on_step_end,
-                    **schnell_kwargs,
                 )
                 return result.images[0]
 

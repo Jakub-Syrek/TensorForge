@@ -12,7 +12,6 @@ const state = {
   accelAvailable: false,  // set true when /api/health reports accel config
   pipelineMode: false,
   currentPipelineId: null,
-  ipImageFile: null,  // optional reference image for IP-Adapter
 };
 
 // In-memory history of successful edits. Cleared on page refresh.
@@ -246,23 +245,6 @@ async function runBgRemove() {
 }
 $("bgRemoveBtn").addEventListener("click", runBgRemove);
 
-// --- IP-Adapter reference image -----------------------------------------
-// Drag/click to attach a reference image; the file is sent alongside the
-// main image as the ``ip_image`` field. The server stores it in the task
-// dir and the worker passes it to FLUX via the IP-Adapter hook in
-// backend/pipeline.py. Cleared via the inline "clear" button.
-$("ipFile").addEventListener("change", (e) => {
-  const f = e.target.files[0];
-  if (!f) return;
-  state.ipImageFile = f;
-  $("ipDropHint").textContent = "ref: " + f.name;
-});
-$("ipClear").addEventListener("click", () => {
-  state.ipImageFile = null;
-  $("ipFile").value = "";
-  $("ipDropHint").textContent = "ref image (optional)";
-});
-
 // --- prompt expansion (Qwen2.5-1.5B) -----------------------------------
 // Replaces the textarea content with the LLM-rewritten version. The
 // intent is inferred from the current mode: 'edit' for kontext / inpaint
@@ -353,6 +335,7 @@ document.querySelectorAll(".seg-btn").forEach(btn => {
     $("outpaintRow").classList.toggle("hidden", state.mode !== "outpaint");
     $("controlRow").classList.toggle("hidden", state.mode !== "control");
     $("pulidRow").classList.toggle("hidden", state.mode !== "pulid");
+    $("ipaRow").classList.toggle("hidden", state.mode !== "ipa");
     maskCanvas.style.pointerEvents = state.mode === "inpaint" ? "auto" : "none";
     // Auto-adjust params only when switching to a mode with materially
     // different defaults (Qwen needs ~50 steps; Flux modes need ~28).
@@ -542,6 +525,7 @@ async function runEdit() {
   if (state.mode === "inpaint" && !state.maskDirty) return setStatus("paint a mask first", "err");
   if (state.mode === "control" && !state.imageFile) return setStatus("upload a control image first (canny / depth / pose)", "err");
   if (state.mode === "pulid" && !state.imageFile) return setStatus("upload a face reference photo first", "err");
+  if (state.mode === "ipa" && !state.imageFile) return setStatus("upload a reference image first (artwork / photo for style)", "err");
 
   // Outpainting reuses FLUX Fill — we build an extended canvas with the
   // original image inset by the chosen padding and a mask that covers
@@ -594,8 +578,7 @@ async function runEdit() {
     fd.append("style_lora", selectedLora);
     fd.append("style_lora_scale", $("styleLoraScale").value || "1.0");
   }
-  if (state.ipImageFile) {
-    fd.append("ip_image", state.ipImageFile);
+  if (state.mode === "ipa") {
     fd.append("ip_scale", $("ipScale").value || "0.7");
   }
   if (state.mode === "control") {
@@ -1017,6 +1000,7 @@ async function loadHistoryEntry(item) {
     $("outpaintRow").classList.toggle("hidden", item.mode !== "outpaint");
     $("controlRow").classList.toggle("hidden", item.mode !== "control");
     $("pulidRow").classList.toggle("hidden", item.mode !== "pulid");
+    $("ipaRow").classList.toggle("hidden", item.mode !== "ipa");
     maskCanvas.style.pointerEvents = item.mode === "inpaint" ? "auto" : "none";
   }
   if (item.steps) $("steps").value = item.steps;
