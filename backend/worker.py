@@ -21,11 +21,13 @@ from datetime import datetime
 
 from PIL import Image, ImageOps
 
+from backend import storage
 from backend.db import SessionLocal, Task, Variant
 from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_bytes, sharpen
 from backend.pipeline import EditAborted, EditRequest, FluxEditor
 from backend.progress import job_progress
 from backend.storage import save_variant_output
+from backend.vision import VisionAnalyzer
 
 log = logging.getLogger(__name__)
 
@@ -33,8 +35,16 @@ POLL_INTERVAL_S = 0.2
 
 
 class TaskWorker:
-    def __init__(self, editor: FluxEditor) -> None:
+    def __init__(
+        self,
+        editor: FluxEditor,
+        vision: VisionAnalyzer | None = None,
+    ) -> None:
         self.editor = editor
+        # Vision is optional so existing tests can construct the worker
+        # without booting Florence-2. Production wiring passes the server's
+        # shared instance so the model loads once across requests.
+        self.vision = vision
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
@@ -98,7 +108,10 @@ class TaskWorker:
                 return
 
             try:
-                output_bytes = self._render(t, v)
+                if t.mode == "auto_mask":
+                    output_bytes = self._render_auto_mask(t, v)
+                else:
+                    output_bytes = self._render(t, v)
             except EditAborted as exc:
                 v.status = "aborted"
                 v.error = str(exc)
@@ -216,11 +229,80 @@ class TaskWorker:
             return
         nxt.parent_variant_id = source.id
         nxt.status = "queued"
+        # If this step was auto_mask, hand the produced mask off to the
+        # next step's mask_path. Typical next step is inpaint, which then
+        # has both the parent image AND a ready-made mask without any
+        # brushing. If the next step doesn't use masks (e.g. kontext),
+        # the mask_path is set but harmlessly ignored.
+        produced_mask = (
+            (t.params or {}).get("produced_mask_path") if t.mode == "auto_mask" else None
+        )
+        if produced_mask:
+            nxt.mask_path = produced_mask
         # The single variant of the next step is also 'blocked' at submission
         # time — flip it to 'queued' so _claim_next_variant picks it up.
         for nv in nxt.variants:
             if nv.status == "blocked":
                 nv.status = "queued"
+
+    def _render_auto_mask(self, t: Task, v: Variant) -> bytes:  # pragma: no cover — GPU + Florence
+        """Run Florence-2 segmentation as a pipeline-only step.
+
+        The step's prompt holds the text to segment ("the dragon"); the
+        input image comes from the previous step's variant (or upload for
+        step 0). We don't edit the image — we just produce a mask. To keep
+        the pipeline-chaining contract simple, this method returns the
+        input image bytes UNCHANGED as the variant's output. The mask itself
+        is saved to the task's storage dir and its path stashed in
+        ``task.params['produced_mask_path']``; ``_maybe_advance_pipeline``
+        then wires it onto the next step's ``mask_path``.
+
+        Net effect: ``[auto_mask:X]`` followed by ``[inpaint]`` runs as
+        "segment X, then inpaint that region" with no manual brushing.
+        """
+        if self.vision is None:
+            raise RuntimeError("auto_mask step requires a VisionAnalyzer instance on TaskWorker")
+
+        text = (t.prompt or "").strip()
+        if not text:
+            raise ValueError("auto_mask: empty prompt (need a segmentation phrase)")
+
+        input_source_path = self._resolve_input_path(t)
+        if not input_source_path:
+            raise ValueError("auto_mask: no input image available for this step")
+
+        img = Image.open(input_source_path)
+        img = ImageOps.exif_transpose(img)
+        # No resize / bucketing — Florence-2 handles arbitrary sizes and
+        # downstream inpaint will do its own bucketing.
+
+        # Mark progress so the live counter doesn't freeze on this step.
+        # Florence-2 is a single forward pass, so 1 / 1 is the honest report.
+        job_progress.start(total=1, mode="auto_mask")
+        try:
+            mask = self.vision.segment(img, text)
+            job_progress.advance(0)
+            job_progress.finish()
+        except Exception as exc:
+            job_progress.finish(error=str(exc))
+            raise
+
+        # Save the mask under this task's storage dir. We reuse save_mask
+        # which writes data/tasks/{task_id}/mask.png — fine because
+        # auto_mask never has its own brushed mask to collide with.
+        mask_bytes = image_to_png_bytes(mask)
+        mask_path = storage.save_mask(t.id, mask_bytes)
+
+        # Stash the mask path in params so _maybe_advance_pipeline can wire
+        # it onto the next step. We reassign params to a fresh dict so
+        # SQLAlchemy's JSON column sees the mutation (no MutableDict here).
+        new_params = dict(t.params or {})
+        new_params["produced_mask_path"] = str(mask_path)
+        t.params = new_params
+
+        # The variant's output is the unchanged input image — keeps the
+        # parent_variant_id chain transparent for the next step.
+        return image_to_png_bytes(img)
 
     def _render(self, t: Task, v: Variant) -> bytes:  # pragma: no cover — GPU inference path
         params = t.params or {}

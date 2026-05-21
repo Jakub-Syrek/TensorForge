@@ -104,9 +104,94 @@ function loadFile(f) {
     maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
     state.maskDirty = false;
     $("dropHint").textContent = f.name;
+    // Reveal the analyze button now that we have an image. Caption/chips
+    // are NOT auto-fetched — Florence-2 is ~150 ms but the user may not
+    // care, so we wait for an explicit click.
+    $("analyzeRow").classList.remove("hidden");
+    resetAnalyze();
   };
   img.src = URL.createObjectURL(f);
 }
+
+// --- scene analysis (Florence-2) ----------------------------------------
+function resetAnalyze() {
+  $("analyzeCaption").textContent = "";
+  $("analyzeChips").innerHTML = "";
+  $("analyzeStatus").textContent = "";
+}
+
+async function runAnalyze() {
+  if (!state.imageFile) return;
+  const btn = $("analyzeBtn");
+  btn.disabled = true;
+  $("analyzeStatus").textContent = "analyzing…";
+  resetAnalyze();
+  $("analyzeStatus").textContent = "analyzing…";
+  try {
+    // Fire both in parallel — Florence-2 loads once on the first call,
+    // second call hits a warm model. Two sequential requests but minimal
+    // overhead vs. exposing one combined endpoint.
+    const fdCap = new FormData();
+    fdCap.append("image", state.imageFile);
+    fdCap.append("level", "detailed");
+    const fdDet = new FormData();
+    fdDet.append("image", state.imageFile);
+    const [capR, detR] = await Promise.all([
+      fetch("/api/vision/caption", { method: "POST", body: fdCap }),
+      fetch("/api/vision/detect", { method: "POST", body: fdDet }),
+    ]);
+    if (!capR.ok) throw new Error("caption: " + (await capR.text()));
+    if (!detR.ok) throw new Error("detect: " + (await detR.text()));
+    const cap = await capR.json();
+    const det = await detR.json();
+    $("analyzeCaption").textContent = cap.caption || "";
+
+    // De-duplicate labels (Florence-2 returns one entry per instance —
+    // e.g. "person" three times if there are three people). Sort by length
+    // descending so multi-word labels come first ("red car" before "car").
+    const seen = new Map();
+    for (const o of det.objects || []) {
+      const key = o.label.toLowerCase();
+      if (!seen.has(key)) seen.set(key, o.label);
+    }
+    const labels = Array.from(seen.values()).sort((a, b) => b.length - a.length);
+    const chips = $("analyzeChips");
+    labels.forEach((label) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "chip";
+      chip.textContent = label;
+      chip.title = `insert "${label}" into the prompt`;
+      chip.addEventListener("click", () => insertIntoPrompt(label));
+      chips.appendChild(chip);
+    });
+    $("analyzeStatus").textContent = labels.length
+      ? `${labels.length} object${labels.length === 1 ? "" : "s"} detected`
+      : "no objects detected";
+  } catch (e) {
+    $("analyzeStatus").textContent = String(e.message || e);
+    $("analyzeStatus").classList.add("err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function insertIntoPrompt(text) {
+  const ta = $("prompt");
+  const start = ta.selectionStart ?? ta.value.length;
+  const end = ta.selectionEnd ?? ta.value.length;
+  const before = ta.value.slice(0, start);
+  const after = ta.value.slice(end);
+  // Insert with a leading space if we're mid-word, no trailing space —
+  // user typically continues typing right after.
+  const sep = before.length && !before.endsWith(" ") && !before.endsWith("\n") ? " " : "";
+  ta.value = before + sep + text + after;
+  const pos = (before + sep + text).length;
+  ta.setSelectionRange(pos, pos);
+  ta.focus();
+}
+
+$("analyzeBtn").addEventListener("click", runAnalyze);
 
 function fitCanvases(w, h) {
   imgCanvas.width = maskCanvas.width = w;
@@ -148,6 +233,7 @@ document.querySelectorAll(".seg-btn").forEach(btn => {
     const previousMode = state.mode;
     state.mode = btn.dataset.mode;
     $("brushRow").classList.toggle("hidden", state.mode !== "inpaint");
+    $("autoMaskRow").classList.toggle("hidden", state.mode !== "inpaint");
     maskCanvas.style.pointerEvents = state.mode === "inpaint" ? "auto" : "none";
     // Auto-adjust params only when switching to a mode with materially
     // different defaults (Qwen needs ~50 steps; Flux modes need ~28).
@@ -164,6 +250,86 @@ $("brushSize").addEventListener("input", (e) => { state.brush = +e.target.value;
 $("clearMask").addEventListener("click", () => {
   maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
   state.maskDirty = false;
+});
+
+// --- auto-mask via Florence-2 -------------------------------------------
+// Posts the current input image + a phrase to /api/vision/segment, gets
+// back a PNG mask, paints it onto maskCanvas (in our brush color so the
+// user sees what was selected) and flags the mask as dirty so 'run' lets
+// the inpaint proceed. User can then refine with brush.
+async function runAutoMask() {
+  if (!state.imageFile) {
+    setAutoMaskStatus("upload an image first", "err");
+    return;
+  }
+  const text = $("autoMaskText").value.trim();
+  if (!text) {
+    setAutoMaskStatus("describe what to mask", "err");
+    return;
+  }
+  const btn = $("autoMaskBtn");
+  btn.disabled = true;
+  setAutoMaskStatus("segmenting…", "");
+  try {
+    const fd = new FormData();
+    fd.append("image", state.imageFile);
+    fd.append("text", text);
+    const r = await fetch("/api/vision/segment", { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    const blob = await r.blob();
+    // Composite the returned mask onto maskCanvas in our brush color.
+    // Florence-2 returns a binary PNG at the input's native resolution,
+    // but maskCanvas is sized to the displayed image — scale if needed.
+    const url = URL.createObjectURL(blob);
+    const maskImg = new Image();
+    await new Promise((res, rej) => {
+      maskImg.onload = res;
+      maskImg.onerror = () => rej(new Error("decode failed"));
+      maskImg.src = url;
+    });
+    // Draw mask as the brush color where pixels are non-zero. We use
+    // source-over with an offscreen tint: render the mask grayscale, then
+    // recolor by reading pixels and stamping in our orange.
+    const tmp = document.createElement("canvas");
+    tmp.width = maskCanvas.width;
+    tmp.height = maskCanvas.height;
+    const tctx = tmp.getContext("2d");
+    tctx.drawImage(maskImg, 0, 0, tmp.width, tmp.height);
+    const data = tctx.getImageData(0, 0, tmp.width, tmp.height);
+    for (let i = 0; i < data.data.length; i += 4) {
+      // Florence mask is grayscale → R=G=B; alpha already 255 from PNG.
+      // Recolor matching pixels to our brush orange (255, 107, 26).
+      if (data.data[i] > 127) {
+        data.data[i] = 255;
+        data.data[i + 1] = 107;
+        data.data[i + 2] = 26;
+        data.data[i + 3] = 255;
+      } else {
+        data.data[i + 3] = 0;
+      }
+    }
+    tctx.putImageData(data, 0, 0);
+    maskCtx.drawImage(tmp, 0, 0);
+    URL.revokeObjectURL(url);
+    state.maskDirty = true;
+    setAutoMaskStatus(`mask painted from "${text}" — refine with brush if needed`, "ok");
+  } catch (e) {
+    setAutoMaskStatus(String(e.message || e), "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+function setAutoMaskStatus(text, kind) {
+  const el = $("autoMaskStatus");
+  el.textContent = text;
+  el.className = "muted small" + (kind === "err" ? " err" : kind === "ok" ? " ok" : "");
+}
+$("autoMaskBtn").addEventListener("click", runAutoMask);
+$("autoMaskText").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    runAutoMask();
+  }
 });
 
 function canvasPos(evt) {
@@ -276,6 +442,9 @@ async function runEdit() {
 //   "[kontext] <prompt>"          -> force mode for this step
 //   "[kontext|tarot] <prompt>"    -> mode + style LoRA id for this step
 //   "[|tarot] <prompt>"           -> auto mode, style override
+//   "[auto_mask] <phrase>"        -> Florence-2 segment step; <phrase>
+//                                   becomes the mask for the next step
+//                                   (typically [inpaint] that follows)
 function parsePipelineSteps(raw) {
   const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
   return lines.map((line) => {
@@ -294,7 +463,7 @@ async function runPipeline(rawPrompt) {
   if (steps.length > 10) return setStatus(`too many steps (${steps.length} > 10)`, "err");
 
   // Validate per-step modes client-side for a fast error before we round-trip.
-  const VALID = new Set(["auto", "kontext", "inpaint", "qwen", "generate"]);
+  const VALID = new Set(["auto", "kontext", "inpaint", "qwen", "generate", "auto_mask"]);
   for (let i = 0; i < steps.length; i++) {
     if (!VALID.has(steps[i].mode)) {
       return setStatus(`step ${i + 1}: invalid mode '${steps[i].mode}'`, "err");
@@ -633,6 +802,7 @@ async function loadHistoryEntry(item) {
     );
     state.mode = item.mode;
     $("brushRow").classList.toggle("hidden", item.mode !== "inpaint");
+    $("autoMaskRow").classList.toggle("hidden", item.mode !== "inpaint");
     maskCanvas.style.pointerEvents = item.mode === "inpaint" ? "auto" : "none";
   }
   if (item.steps) $("steps").value = item.steps;
