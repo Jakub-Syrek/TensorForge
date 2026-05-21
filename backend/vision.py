@@ -132,11 +132,20 @@ class VisionAnalyzer:
 
     def _load_blip(self) -> tuple[object, object]:  # pragma: no cover — needs GPU + download
         if self._blip is None:
-            from transformers import BlipForConditionalGeneration, BlipProcessor
+            # Use the auto-registry path (AutoProcessor + AutoModelForImageTextToText)
+            # instead of importing BlipForConditionalGeneration directly.
+            # In transformers 5.x the direct class import lazy-loads through
+            # an internal registry that has been observed to fail inside
+            # FastAPI / threaded contexts ("cannot import name
+            # 'BlipForConditionalGeneration' from 'transformers'") even when
+            # the same import works in a CLI process — apparently load order
+            # of sibling auto-classes can poison the lazy resolver. Auto*
+            # routes through the config-driven dispatch and is immune.
+            from transformers import AutoModelForImageTextToText, AutoProcessor
 
             log.info("loading BLIP (image captioning)")
-            proc = BlipProcessor.from_pretrained(BLIP_MODEL)  # nosec B615
-            model = BlipForConditionalGeneration.from_pretrained(  # nosec B615
+            proc = AutoProcessor.from_pretrained(BLIP_MODEL)  # nosec B615
+            model = AutoModelForImageTextToText.from_pretrained(  # nosec B615
                 BLIP_MODEL, torch_dtype=self._dtype
             ).to(self._device)
             model.eval()
