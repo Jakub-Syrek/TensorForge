@@ -23,3 +23,9 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+
+[tool.coverage.run]
+# Vendored upstream InstantX inference code lives here verbatim — kept
+# untouched on purpose, exercised only on GPU. Excluding from coverage
+# so its ~550 unreachable-in-CI statements don't tank the threshold.
+omit = ["backend/ipa_vendored/*"]
