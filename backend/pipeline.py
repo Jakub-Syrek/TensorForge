@@ -356,11 +356,25 @@ class FluxEditor:
             weights.append(style_scale)
         if names:
             pipe.set_adapters(names, adapter_weights=weights)
-        else:
-            # No adapters requested. If the pipe never had any loaded, calling
-            # set_adapters([]) raises on some diffusers versions — guard it.
-            with contextlib.suppress(ValueError, RuntimeError):
-                pipe.set_adapters([])
+            return
+
+        # No adapters requested. Only worth zeroing the stack if SOMETHING
+        # was previously loaded onto this pipe — otherwise diffusers'
+        # set_adapters([]) walks an empty ``peft_config`` and raises
+        # ``KeyError: 'transformer'`` (or AttributeError on older versions).
+        # We know what was loaded via our per-pipe trackers; if all are
+        # empty for this pipe, the stack is already clean and the call
+        # is unnecessary.
+        pipe_id = id(pipe)
+        ever_loaded = (
+            self.accel is not None
+            or pipe_id in self._loaded_style_loras
+            or pipe_id in self._ip_adapter_loaded
+        )
+        if not ever_loaded:
+            return
+        with contextlib.suppress(ValueError, RuntimeError, KeyError, AttributeError):
+            pipe.set_adapters([])
 
     def _apply_memory_savers(self, pipe) -> None:  # pragma: no cover — GPU branches
         if torch.cuda.is_available():
