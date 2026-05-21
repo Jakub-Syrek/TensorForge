@@ -319,6 +319,26 @@ button.chain:hover { background: var(--accent); color: #1a0f08; }
 }
 .pipeline-toggle.on { color: var(--fg); }
 
+.auto-mask-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.auto-mask-row input[type="text"] {
+  flex: 1;
+  min-width: 200px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  padding: 6px 8px;
+  font-size: 13px;
+}
+.auto-mask-row #autoMaskStatus { flex-basis: 100%; }
+.auto-mask-row #autoMaskStatus.err { color: var(--err); }
+.auto-mask-row #autoMaskStatus.ok { color: var(--accent); }
+
 .lora-row {
   flex-direction: row;
   align-items: center;

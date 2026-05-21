@@ -39,6 +39,12 @@
         <button type="button" id="clearMask">clear mask</button>
       </div>
 
+      <div class="row auto-mask-row hidden" id="autoMaskRow">
+        <input id="autoMaskText" type="text" placeholder="describe what to mask · e.g. 'the sky', 'her coat', 'the dragon'" />
+        <button type="button" id="autoMaskBtn" title="Florence-2 segments the described region — mask is painted onto the canvas, you can refine with brush before running inpaint">auto-mask</button>
+        <span id="autoMaskStatus" class="muted small"></span>
+      </div>
+
       <div class="row">
         <textarea id="prompt" placeholder="e.g. 'replace the sky with a dramatic sunset' (Kontext) — or for inpaint: describe only what should appear inside the mask"></textarea>
       </div>

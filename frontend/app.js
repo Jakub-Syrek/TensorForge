@@ -148,6 +148,7 @@ document.querySelectorAll(".seg-btn").forEach(btn => {
     const previousMode = state.mode;
     state.mode = btn.dataset.mode;
     $("brushRow").classList.toggle("hidden", state.mode !== "inpaint");
+    $("autoMaskRow").classList.toggle("hidden", state.mode !== "inpaint");
     maskCanvas.style.pointerEvents = state.mode === "inpaint" ? "auto" : "none";
     // Auto-adjust params only when switching to a mode with materially
     // different defaults (Qwen needs ~50 steps; Flux modes need ~28).
@@ -164,6 +165,86 @@ $("brushSize").addEventListener("input", (e) => { state.brush = +e.target.value;
 $("clearMask").addEventListener("click", () => {
   maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
   state.maskDirty = false;
+});
+
+// --- auto-mask via Florence-2 -------------------------------------------
+// Posts the current input image + a phrase to /api/vision/segment, gets
+// back a PNG mask, paints it onto maskCanvas (in our brush color so the
+// user sees what was selected) and flags the mask as dirty so 'run' lets
+// the inpaint proceed. User can then refine with brush.
+async function runAutoMask() {
+  if (!state.imageFile) {
+    setAutoMaskStatus("upload an image first", "err");
+    return;
+  }
+  const text = $("autoMaskText").value.trim();
+  if (!text) {
+    setAutoMaskStatus("describe what to mask", "err");
+    return;
+  }
+  const btn = $("autoMaskBtn");
+  btn.disabled = true;
+  setAutoMaskStatus("segmenting…", "");
+  try {
+    const fd = new FormData();
+    fd.append("image", state.imageFile);
+    fd.append("text", text);
+    const r = await fetch("/api/vision/segment", { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    const blob = await r.blob();
+    // Composite the returned mask onto maskCanvas in our brush color.
+    // Florence-2 returns a binary PNG at the input's native resolution,
+    // but maskCanvas is sized to the displayed image — scale if needed.
+    const url = URL.createObjectURL(blob);
+    const maskImg = new Image();
+    await new Promise((res, rej) => {
+      maskImg.onload = res;
+      maskImg.onerror = () => rej(new Error("decode failed"));
+      maskImg.src = url;
+    });
+    // Draw mask as the brush color where pixels are non-zero. We use
+    // source-over with an offscreen tint: render the mask grayscale, then
+    // recolor by reading pixels and stamping in our orange.
+    const tmp = document.createElement("canvas");
+    tmp.width = maskCanvas.width;
+    tmp.height = maskCanvas.height;
+    const tctx = tmp.getContext("2d");
+    tctx.drawImage(maskImg, 0, 0, tmp.width, tmp.height);
+    const data = tctx.getImageData(0, 0, tmp.width, tmp.height);
+    for (let i = 0; i < data.data.length; i += 4) {
+      // Florence mask is grayscale → R=G=B; alpha already 255 from PNG.
+      // Recolor matching pixels to our brush orange (255, 107, 26).
+      if (data.data[i] > 127) {
+        data.data[i] = 255;
+        data.data[i + 1] = 107;
+        data.data[i + 2] = 26;
+        data.data[i + 3] = 255;
+      } else {
+        data.data[i + 3] = 0;
+      }
+    }
+    tctx.putImageData(data, 0, 0);
+    maskCtx.drawImage(tmp, 0, 0);
+    URL.revokeObjectURL(url);
+    state.maskDirty = true;
+    setAutoMaskStatus(`mask painted from "${text}" — refine with brush if needed`, "ok");
+  } catch (e) {
+    setAutoMaskStatus(String(e.message || e), "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+function setAutoMaskStatus(text, kind) {
+  const el = $("autoMaskStatus");
+  el.textContent = text;
+  el.className = "muted small" + (kind === "err" ? " err" : kind === "ok" ? " ok" : "");
+}
+$("autoMaskBtn").addEventListener("click", runAutoMask);
+$("autoMaskText").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    runAutoMask();
+  }
 });
 
 function canvasPos(evt) {
@@ -633,6 +714,7 @@ async function loadHistoryEntry(item) {
     );
     state.mode = item.mode;
     $("brushRow").classList.toggle("hidden", item.mode !== "inpaint");
+    $("autoMaskRow").classList.toggle("hidden", item.mode !== "inpaint");
     maskCanvas.style.pointerEvents = item.mode === "inpaint" ? "auto" : "none";
   }
   if (item.steps) $("steps").value = item.steps;
