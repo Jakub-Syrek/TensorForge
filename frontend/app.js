@@ -104,9 +104,94 @@ function loadFile(f) {
     maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
     state.maskDirty = false;
     $("dropHint").textContent = f.name;
+    // Reveal the analyze button now that we have an image. Caption/chips
+    // are NOT auto-fetched — Florence-2 is ~150 ms but the user may not
+    // care, so we wait for an explicit click.
+    $("analyzeRow").classList.remove("hidden");
+    resetAnalyze();
   };
   img.src = URL.createObjectURL(f);
 }
+
+// --- scene analysis (Florence-2) ----------------------------------------
+function resetAnalyze() {
+  $("analyzeCaption").textContent = "";
+  $("analyzeChips").innerHTML = "";
+  $("analyzeStatus").textContent = "";
+}
+
+async function runAnalyze() {
+  if (!state.imageFile) return;
+  const btn = $("analyzeBtn");
+  btn.disabled = true;
+  $("analyzeStatus").textContent = "analyzing…";
+  resetAnalyze();
+  $("analyzeStatus").textContent = "analyzing…";
+  try {
+    // Fire both in parallel — Florence-2 loads once on the first call,
+    // second call hits a warm model. Two sequential requests but minimal
+    // overhead vs. exposing one combined endpoint.
+    const fdCap = new FormData();
+    fdCap.append("image", state.imageFile);
+    fdCap.append("level", "detailed");
+    const fdDet = new FormData();
+    fdDet.append("image", state.imageFile);
+    const [capR, detR] = await Promise.all([
+      fetch("/api/vision/caption", { method: "POST", body: fdCap }),
+      fetch("/api/vision/detect", { method: "POST", body: fdDet }),
+    ]);
+    if (!capR.ok) throw new Error("caption: " + (await capR.text()));
+    if (!detR.ok) throw new Error("detect: " + (await detR.text()));
+    const cap = await capR.json();
+    const det = await detR.json();
+    $("analyzeCaption").textContent = cap.caption || "";
+
+    // De-duplicate labels (Florence-2 returns one entry per instance —
+    // e.g. "person" three times if there are three people). Sort by length
+    // descending so multi-word labels come first ("red car" before "car").
+    const seen = new Map();
+    for (const o of det.objects || []) {
+      const key = o.label.toLowerCase();
+      if (!seen.has(key)) seen.set(key, o.label);
+    }
+    const labels = Array.from(seen.values()).sort((a, b) => b.length - a.length);
+    const chips = $("analyzeChips");
+    labels.forEach((label) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "chip";
+      chip.textContent = label;
+      chip.title = `insert "${label}" into the prompt`;
+      chip.addEventListener("click", () => insertIntoPrompt(label));
+      chips.appendChild(chip);
+    });
+    $("analyzeStatus").textContent = labels.length
+      ? `${labels.length} object${labels.length === 1 ? "" : "s"} detected`
+      : "no objects detected";
+  } catch (e) {
+    $("analyzeStatus").textContent = String(e.message || e);
+    $("analyzeStatus").classList.add("err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function insertIntoPrompt(text) {
+  const ta = $("prompt");
+  const start = ta.selectionStart ?? ta.value.length;
+  const end = ta.selectionEnd ?? ta.value.length;
+  const before = ta.value.slice(0, start);
+  const after = ta.value.slice(end);
+  // Insert with a leading space if we're mid-word, no trailing space —
+  // user typically continues typing right after.
+  const sep = before.length && !before.endsWith(" ") && !before.endsWith("\n") ? " " : "";
+  ta.value = before + sep + text + after;
+  const pos = (before + sep + text).length;
+  ta.setSelectionRange(pos, pos);
+  ta.focus();
+}
+
+$("analyzeBtn").addEventListener("click", runAnalyze);
 
 function fitCanvases(w, h) {
   imgCanvas.width = maskCanvas.width = w;

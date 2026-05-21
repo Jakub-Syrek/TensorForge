@@ -162,6 +162,74 @@ async def vision_segment(
     return Response(content=image_to_png_bytes(mask), media_type="image/png")
 
 
+@app.post("/api/vision/caption")
+async def vision_caption(
+    image: UploadFile = File(...),
+    level: str = Form("detailed"),
+) -> JSONResponse:
+    """Generate a text description of the scene.
+
+    level: 'short' (1 sentence), 'detailed' (~2-3 sentences), or
+    'more_detailed' (long paragraph with spatial relations). UI uses this
+    as a prompt-writing helper — the user can copy/edit it before running
+    an edit instead of staring at the input wondering how to describe it.
+    """
+    img_bytes = await image.read()
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        img = ImageOps.exif_transpose(img)
+        img.load()
+    except (UnidentifiedImageError, OSError) as ex:
+        raise HTTPException(400, f"Could not decode image: {ex}") from ex
+    except Image.DecompressionBombError as ex:
+        raise HTTPException(413, f"Image too large: {ex}") from ex
+
+    try:
+        caption = await asyncio.to_thread(vision.caption, img, level)
+    except Exception as ex:
+        raise HTTPException(500, f"caption failed: {ex}") from ex
+    return JSONResponse({"caption": caption, "level": level})
+
+
+@app.post("/api/vision/detect")
+async def vision_detect(
+    image: UploadFile = File(...),
+    text: str | None = Form(None),
+) -> JSONResponse:
+    """Open-vocabulary object detection.
+
+    Without ``text``: returns boxes for every detected object (COCO-style
+    classes from Florence-2's generic OD head).
+    With ``text``: caption-to-phrase grounding — Florence-2 grounds the
+    named phrase(s) in the image and returns matching boxes. Use this to
+    locate "the dragon" or "two figures in the background" without
+    segmenting them.
+
+    Output is a list of {label, box: [x1,y1,x2,y2]} dicts in image-pixel
+    coordinates. UI surfaces labels as clickable chips that insert into
+    the prompt textarea.
+    """
+    img_bytes = await image.read()
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        img = ImageOps.exif_transpose(img)
+        img.load()
+    except (UnidentifiedImageError, OSError) as ex:
+        raise HTTPException(400, f"Could not decode image: {ex}") from ex
+    except Image.DecompressionBombError as ex:
+        raise HTTPException(413, f"Image too large: {ex}") from ex
+
+    try:
+        objects = await asyncio.to_thread(vision.detect, img, (text or "").strip() or None)
+    except Exception as ex:
+        raise HTTPException(500, f"detect failed: {ex}") from ex
+    return JSONResponse(
+        {
+            "objects": [{"label": o.label, "box": list(o.box), "score": o.score} for o in objects],
+        }
+    )
+
+
 @app.get("/api/progress")
 def progress() -> JSONResponse:
     gpu = query_gpu_stats()

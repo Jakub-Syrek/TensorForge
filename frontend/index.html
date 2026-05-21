@@ -24,6 +24,13 @@
         </label>
       </div>
 
+      <div class="row analyze-row hidden" id="analyzeRow">
+        <button type="button" id="analyzeBtn" title="Florence-2 captions the scene and lists detected objects. Click a chip to insert that label into the prompt — handy for 'replace the X with Y' style edits.">analyze scene</button>
+        <span id="analyzeStatus" class="muted small"></span>
+        <div class="analyze-caption muted small" id="analyzeCaption"></div>
+        <div class="analyze-chips" id="analyzeChips"></div>
+      </div>
+
       <div class="row mode-row">
         <div class="seg">
           <button type="button" data-mode="auto" class="seg-btn active" title="Auto: routes to Kontext (edit) or Schnell (generate) based on the first word of the prompt and whether an image is uploaded">auto</button>

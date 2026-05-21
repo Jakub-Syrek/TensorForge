@@ -319,6 +319,36 @@ button.chain:hover { background: var(--accent); color: #1a0f08; }
 }
 .pipeline-toggle.on { color: var(--fg); }
 
+.analyze-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.analyze-row #analyzeStatus.err { color: var(--err); }
+.analyze-caption {
+  flex-basis: 100%;
+  font-style: italic;
+  line-height: 1.4;
+  padding: 4px 0;
+}
+.analyze-chips {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--fg);
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+
 .auto-mask-row {
   flex-direction: row;
   align-items: center;
