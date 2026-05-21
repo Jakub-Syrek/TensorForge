@@ -395,6 +395,8 @@ async def create_task(
     style_lora: str | None = Form(None),
     style_lora_scale: float = Form(1.0),
     upscale: str = Form("lanczos"),
+    ip_image: UploadFile | None = File(None),
+    ip_scale: float = Form(0.7),
 ) -> JSONResponse:
     """Enqueue an edit/generate task. Returns task id and initial state.
 
@@ -489,6 +491,8 @@ async def create_task(
                 "style_lora_id": resolved_style_id,
                 "style_lora_scale": clamped_style_scale,
                 "upscale": upscale,
+                "ip_image_path": None,  # populated below if uploaded
+                "ip_scale": max(0.0, min(2.0, float(ip_scale))),
             },
         )
         s.add(t)
@@ -500,6 +504,14 @@ async def create_task(
         if mode == "inpaint" and mask is not None:
             mask_bytes = await mask.read()
             t.mask_path = str(storage.save_mask(t.id, mask_bytes))
+        if ip_image is not None:
+            ip_bytes = await ip_image.read()
+            ip_path = storage.save_ip_image(t.id, ip_bytes)
+            # JSON column needs a fresh dict assignment to register the
+            # mutation with SQLAlchemy (no MutableDict configured).
+            new_params = dict(t.params)
+            new_params["ip_image_path"] = str(ip_path)
+            t.params = new_params
 
         for sd in seeds:
             s.add(Variant(task_id=t.id, seed=sd))

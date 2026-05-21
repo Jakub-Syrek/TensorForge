@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import gc
+import logging
 import os
 from dataclasses import dataclass
 from typing import Literal
@@ -20,6 +21,8 @@ from backend.loras import StyleLoRA
 from backend.loras import get as get_style_lora
 from backend.loras import is_compatible as style_compatible
 from backend.progress import job_progress
+
+log = logging.getLogger(__name__)
 
 KONTEXT_MODEL = "black-forest-labs/FLUX.1-Kontext-dev"
 FILL_MODEL = "black-forest-labs/FLUX.1-Fill-dev"
@@ -44,6 +47,14 @@ Mode = Literal["kontext", "inpaint", "qwen", "generate"]
 
 QWEN_EDIT_MODEL = "Qwen/Qwen-Image-Edit"
 SCHNELL_MODEL = "black-forest-labs/FLUX.1-schnell"
+
+# IP-Adapter for FLUX — image-as-prompt augmentation. Drop a reference
+# image, the model inherits its style and composition without needing
+# verbal description. Hosted by InstantX, ~1 GB additional VRAM, works
+# on both schnell and kontext (and the base FLUX.1-dev that ControlNet
+# uses — but that's a separate pipeline).
+IP_ADAPTER_REPO = "InstantX/FLUX.1-dev-IP-Adapter"
+IP_ADAPTER_WEIGHT = "ip-adapter.bin"
 
 
 class EditAborted(RuntimeError):
@@ -100,6 +111,13 @@ class EditRequest:
     # adapter via diffusers' multi-adapter mechanism. None = no style bias.
     style_lora_id: str | None = None
     style_lora_scale: float = 1.0
+    # Optional IP-Adapter reference image. When set, FLUX inherits visual
+    # style / composition from this image alongside the prompt — useful
+    # when an aesthetic is hard to describe in words. Loaded lazily on
+    # first use; the per-request scale (0-2, ~0.7 typical) controls how
+    # strongly the reference biases the output.
+    ip_adapter_image: Image.Image | None = None
+    ip_adapter_scale: float = 0.7
 
 
 class FluxEditor:
@@ -116,6 +134,10 @@ class FluxEditor:
         # that pipe. Keyed by ``id(pipe)`` so pipes are tracked even though
         # they're plain objects (no hashable identity beyond that).
         self._loaded_style_loras: dict[int, set[str]] = {}
+        # Per-pipeline flag tracking whether the IP-Adapter has been loaded
+        # onto that pipe. Loading is one-shot and ~1 GB; toggling per
+        # request is done via ``set_ip_adapter_scale(0)`` instead.
+        self._ip_adapter_loaded: set[int] = set()
 
     def _load_kontext(self):  # pragma: no cover — requires GPU + 24 GB model
         from diffusers import FluxKontextPipeline
@@ -218,6 +240,50 @@ class FluxEditor:
             text_encoder_2=text_encoder_2,
             torch_dtype=self._dtype,
         )
+
+    def _ensure_ip_adapter_loaded(self, pipe) -> None:  # pragma: no cover — GPU + download
+        """Load the IP-Adapter weights onto ``pipe`` on first use.
+
+        Subsequent requests reuse the warm adapter — toggling between
+        IP-Adapter-on and IP-Adapter-off is done by setting the scale
+        to 0 (effectively a no-op), not by unloading.
+        """
+        pipe_id = id(pipe)
+        if pipe_id in self._ip_adapter_loaded:
+            return
+        log.info("loading IP-Adapter weights onto %s", type(pipe).__name__)
+        # nosec B615 — InstantX is a trusted upstream; pinning a revision
+        # would block legit fixes for a single-user desktop app.
+        pipe.load_ip_adapter(  # nosec B615
+            IP_ADAPTER_REPO,
+            weight_name=IP_ADAPTER_WEIGHT,
+        )
+        self._ip_adapter_loaded.add(pipe_id)
+
+    def _apply_ip_adapter(  # pragma: no cover — GPU pipe
+        self,
+        pipe,
+        ip_image: Image.Image | None,
+        scale: float,
+    ) -> Image.Image | None:
+        """Configure the IP-Adapter for one request and return the image
+        to pass into the pipe call (or None if disabled).
+
+        scale=0 OR ip_image=None -> set adapter scale to 0 (effectively
+        disables conditioning without unloading) and return None.
+        Otherwise load the adapter (idempotent), set the scale, return
+        the image so the caller passes it to ``pipe(..., ip_adapter_image=img)``.
+        """
+        if ip_image is None or scale <= 0:
+            # Only zero the scale if the adapter was previously loaded —
+            # calling set_ip_adapter_scale on a pipe that never loaded
+            # one raises. Tracking via _ip_adapter_loaded covers this.
+            if id(pipe) in self._ip_adapter_loaded:
+                pipe.set_ip_adapter_scale(0.0)
+            return None
+        self._ensure_ip_adapter_loaded(pipe)
+        pipe.set_ip_adapter_scale(scale)
+        return ensure_rgb(ip_image)
 
     ACCEL_ADAPTER_NAME = "accel"
 
@@ -375,6 +441,10 @@ class FluxEditor:
                     style=style,
                     style_scale=req.style_lora_scale,
                 )
+                ip_img = self._apply_ip_adapter(
+                    self.kontext, req.ip_adapter_image, req.ip_adapter_scale
+                )
+                kontext_kwargs = {} if ip_img is None else {"ip_adapter_image": ip_img}
                 result = self.kontext(
                     prompt=req.prompt,
                     image=image,
@@ -382,6 +452,7 @@ class FluxEditor:
                     guidance_scale=req.guidance,
                     generator=generator,
                     callback_on_step_end=_on_step_end,
+                    **kontext_kwargs,
                 )
                 return result.images[0]
 
@@ -425,6 +496,10 @@ class FluxEditor:
                     style=style,
                     style_scale=req.style_lora_scale,
                 )
+                ip_img = self._apply_ip_adapter(
+                    self.schnell, req.ip_adapter_image, req.ip_adapter_scale
+                )
+                schnell_kwargs = {} if ip_img is None else {"ip_adapter_image": ip_img}
                 # schnell's guidance is baked in via distillation; passing
                 # guidance_scale=0 is the recommended sentinel.
                 result = self.schnell(
@@ -435,6 +510,7 @@ class FluxEditor:
                     guidance_scale=0.0,
                     generator=generator,
                     callback_on_step_end=_on_step_end,
+                    **schnell_kwargs,
                 )
                 return result.images[0]
 

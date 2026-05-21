@@ -12,6 +12,7 @@ const state = {
   accelAvailable: false,  // set true when /api/health reports accel config
   pipelineMode: false,
   currentPipelineId: null,
+  ipImageFile: null,  // optional reference image for IP-Adapter
 };
 
 // In-memory history of successful edits. Cleared on page refresh.
@@ -244,6 +245,23 @@ async function runBgRemove() {
   }
 }
 $("bgRemoveBtn").addEventListener("click", runBgRemove);
+
+// --- IP-Adapter reference image -----------------------------------------
+// Drag/click to attach a reference image; the file is sent alongside the
+// main image as the ``ip_image`` field. The server stores it in the task
+// dir and the worker passes it to FLUX via the IP-Adapter hook in
+// backend/pipeline.py. Cleared via the inline "clear" button.
+$("ipFile").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  state.ipImageFile = f;
+  $("ipDropHint").textContent = "ref: " + f.name;
+});
+$("ipClear").addEventListener("click", () => {
+  state.ipImageFile = null;
+  $("ipFile").value = "";
+  $("ipDropHint").textContent = "ref image (optional)";
+});
 
 // --- prompt expansion (Qwen2.5-1.5B) -----------------------------------
 // Replaces the textarea content with the LLM-rewritten version. The
@@ -571,6 +589,10 @@ async function runEdit() {
   if (selectedLora) {
     fd.append("style_lora", selectedLora);
     fd.append("style_lora_scale", $("styleLoraScale").value || "1.0");
+  }
+  if (state.ipImageFile) {
+    fd.append("ip_image", state.ipImageFile);
+    fd.append("ip_scale", $("ipScale").value || "0.7");
   }
   if (state.mode === "inpaint") {
     fd.append("mask", await maskBlob(), "mask.png");
