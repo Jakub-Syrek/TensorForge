@@ -326,33 +326,55 @@ class FluxEditor:
                 log.info("unwrapping IP-Adapter state dict from '%s'", only_key)
                 flat = flat[only_key]
 
+        # InstantX/FLUX.1-dev-IP-Adapter actually ships in the
+        # diffusers-friendly nested layout:
+        #   {"image_proj": {"proj.0.weight": ..., ...},
+        #    "ip_adapter": {"0.to_k_ip.weight": ..., ...}}
+        # The standard ``pipe.load_ip_adapter()`` still rejects it with
+        # "Required keys missing" because its internal validator looks
+        # for FLAT keys ("image_proj.proj.0.weight") rather than the
+        # nested dicts. Detect that layout and unwrap before flattening.
         image_proj: dict[str, torch.Tensor] = {}
         ip_adapter: dict[str, torch.Tensor] = {}
-        unknown: list[str] = []
 
-        for key, value in flat.items():
-            if key.startswith("image_proj_model."):
-                image_proj[key[len("image_proj_model.") :]] = value
-            elif key.startswith("image_proj."):
-                image_proj[key[len("image_proj.") :]] = value
-            elif key.startswith("proj."):
-                image_proj[key] = value
-            elif key.startswith("ip_adapter."):
-                ip_adapter[key[len("ip_adapter.") :]] = value
-            elif "to_k_ip" in key or "to_v_ip" in key or "_ip." in key:
-                ip_adapter[key] = value
-            else:
-                unknown.append(key)
-
-        if unknown:
-            log.warning(
-                "IP-Adapter remapper: %d keys with unrecognized prefix "
-                "were dropped (first 5: %s). If output looks off, the "
-                "upstream schema may have changed — check %s",
-                len(unknown),
-                unknown[:5],
-                IP_ADAPTER_REPO,
+        if (
+            isinstance(flat, dict)
+            and isinstance(flat.get("image_proj"), dict)
+            and isinstance(flat.get("ip_adapter"), dict)
+        ):
+            image_proj = dict(flat["image_proj"])
+            ip_adapter = dict(flat["ip_adapter"])
+            log.info(
+                "IP-Adapter file is in nested {image_proj, ip_adapter} "
+                "layout (image_proj=%d keys, ip_adapter=%d keys) — "
+                "flattening with dotted joins for diffusers' validator",
+                len(image_proj),
+                len(ip_adapter),
             )
+        else:
+            # Older / community variants ship a flat layout — fall back to
+            # the heuristic prefix bucketer.
+            unknown: list[str] = []
+            for key, value in flat.items():
+                if key.startswith("image_proj_model."):
+                    image_proj[key[len("image_proj_model.") :]] = value
+                elif key.startswith("image_proj."):
+                    image_proj[key[len("image_proj.") :]] = value
+                elif key.startswith("proj."):
+                    image_proj[key] = value
+                elif key.startswith("ip_adapter."):
+                    ip_adapter[key[len("ip_adapter.") :]] = value
+                elif "to_k_ip" in key or "to_v_ip" in key or "_ip." in key:
+                    ip_adapter[key] = value
+                else:
+                    unknown.append(key)
+            if unknown:
+                log.warning(
+                    "IP-Adapter remapper: %d keys with unrecognized prefix "
+                    "were dropped (first 5: %s)",
+                    len(unknown),
+                    unknown[:5],
+                )
 
         if not image_proj or not ip_adapter:
             # Dump enough information so the next iteration of the remapper
@@ -378,16 +400,23 @@ class FluxEditor:
                 f"{IP_ADAPTER_REPO}"
             )
 
+        # Diffusers' validator looks for FLAT keys with dotted prefixes,
+        # not the nested {image_proj: {...}, ip_adapter: {...}} layout.
+        # Build the flat dict it expects.
+        flat_state_dict: dict[str, torch.Tensor] = {}
+        for k, v in image_proj.items():
+            flat_state_dict[f"image_proj.{k}"] = v
+        for k, v in ip_adapter.items():
+            flat_state_dict[f"ip_adapter.{k}"] = v
+
         log.info(
-            "IP-Adapter remapped: %d image_proj keys, %d ip_adapter keys",
+            "IP-Adapter remapped to flat layout: %d total keys (image_proj=%d, ip_adapter=%d)",
+            len(flat_state_dict),
             len(image_proj),
             len(ip_adapter),
         )
 
-        pipe.load_ip_adapter(
-            {"image_proj": image_proj, "ip_adapter": ip_adapter},
-            weight_name=None,
-        )
+        pipe.load_ip_adapter(flat_state_dict, weight_name=None)
 
     def _apply_ip_adapter(  # pragma: no cover — GPU pipe
         self,
