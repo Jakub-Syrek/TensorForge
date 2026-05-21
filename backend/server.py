@@ -1,4 +1,4 @@
-"""FastAPI server for AiPictureModifier.
+"""FastAPI server for TensorForge.
 
 Endpoints:
   GET  /              -> serves the single-page UI
@@ -113,7 +113,7 @@ async def lifespan(_app: FastAPI):
     task_worker.stop(timeout=5.0)
 
 
-app = FastAPI(title="AiPictureModifier", lifespan=lifespan)
+app = FastAPI(title="TensorForge", lifespan=lifespan)
 
 FRONTEND_DIR = REPO_ROOT / "frontend"
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
