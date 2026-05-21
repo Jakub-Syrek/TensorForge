@@ -68,15 +68,16 @@ main {
 .left { display: flex; flex-direction: column; gap: 12px; }
 
 .row { display: flex; flex-direction: column; gap: 6px; }
-.row.mode-row, .row.brush-row, .row.params, .row.outpaint-row { flex-direction: row; align-items: center; gap: 10px; }
-.row.outpaint-row { flex-wrap: wrap; }
-.row.outpaint-row label {
+.row.mode-row, .row.brush-row, .row.params, .row.outpaint-row, .row.control-row { flex-direction: row; align-items: center; gap: 10px; }
+.row.outpaint-row, .row.control-row { flex-wrap: wrap; }
+.row.outpaint-row label, .row.control-row label {
   display: flex; flex-direction: column; gap: 4px;
   font-size: 11px; color: var(--muted);
   text-transform: uppercase; letter-spacing: 0.05em;
 }
-.row.outpaint-row input[type="number"] { width: 80px; }
-.row.outpaint-row > span { flex-basis: 100%; font-style: italic; }
+.row.outpaint-row input[type="number"], .row.control-row input[type="number"] { width: 80px; }
+.row.control-row select { font-size: 13px; }
+.row.outpaint-row > span, .row.control-row > span { flex-basis: 100%; font-style: italic; }
 .row.params label { display: flex; flex-direction: column; gap: 4px; flex: 1; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
 
 input[type="number"], input[type="range"], textarea, select {

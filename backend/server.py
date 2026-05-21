@@ -50,6 +50,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from backend import loras, storage
 from backend.bg_remove import BackgroundRemover
+from backend.controlnet import UNION_MODES, ControlNetGenerator
 from backend.db import Task, Variant, get_session, init_db
 from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_bytes, sharpen
 from backend.intent import explain as classify_intent
@@ -83,7 +84,12 @@ bg_remover = BackgroundRemover()
 # Qwen2.5-1.5B-Instruct prompt rewriter — lazy-loaded on first
 # /api/prompt/expand hit. ~3 GB bf16; coexists with NF4 FLUX on 16 GB.
 prompt_rewriter = PromptRewriter()
-task_worker = TaskWorker(editor, vision=vision, upscaler=upscaler)
+# FLUX ControlNet (Shakker-Labs Union-Pro) — lazy-loaded on first task
+# with mode="control". ~30 GB on disk (FLUX.1-dev base + Union-Pro);
+# ~8 GB VRAM under NF4. Cannot coexist with warm Kontext on 16 GB — the
+# worker releases editor state before loading ControlNet.
+controlnet = ControlNetGenerator()
+task_worker = TaskWorker(editor, vision=vision, upscaler=upscaler, controlnet=controlnet)
 
 
 @asynccontextmanager
@@ -397,6 +403,8 @@ async def create_task(
     upscale: str = Form("lanczos"),
     ip_image: UploadFile | None = File(None),
     ip_scale: float = Form(0.7),
+    control_type: str = Form("canny"),
+    control_scale: float = Form(0.7),
 ) -> JSONResponse:
     """Enqueue an edit/generate task. Returns task id and initial state.
 
@@ -404,16 +412,26 @@ async def create_task(
       - 'kontext'/'inpaint'/'qwen': image-conditioned edit
       - 'generate': text-to-image (no input image needed)
       - 'auto': server picks 'kontext' or 'generate' from prompt keywords
+      - 'control': FLUX ControlNet generation. ``image`` is interpreted as
+        the conditioning map (canny edges, depth map, pose skeleton —
+        controlled by ``control_type``).
     """
-    if mode not in {"kontext", "inpaint", "qwen", "generate", "auto"}:
-        raise HTTPException(
-            400,
-            f"mode must be 'kontext', 'inpaint', 'qwen', 'generate', or 'auto', got {mode!r}",
-        )
+    valid_modes = {"kontext", "inpaint", "qwen", "generate", "auto", "control"}
+    if mode not in valid_modes:
+        raise HTTPException(400, f"mode must be one of {sorted(valid_modes)}, got {mode!r}")
     if not prompt.strip():
         raise HTTPException(400, "prompt is empty")
     if mode == "inpaint" and mask is None:
         raise HTTPException(400, "inpaint requires a mask")
+    if mode == "control":
+        if image is None:
+            raise HTTPException(400, "control requires a control image (uploaded as 'image')")
+        if control_type not in UNION_MODES:
+            raise HTTPException(
+                400,
+                f"control_type must be one of {sorted(UNION_MODES)}, got {control_type!r}",
+            )
+    clamped_control_scale = max(0.0, min(2.0, float(control_scale)))
 
     # Resolve 'auto' -> concrete mode based on prompt keywords + image presence.
     routing = None
@@ -493,6 +511,8 @@ async def create_task(
                 "upscale": upscale,
                 "ip_image_path": None,  # populated below if uploaded
                 "ip_scale": max(0.0, min(2.0, float(ip_scale))),
+                "control_type": control_type,
+                "control_scale": clamped_control_scale,
             },
         )
         s.add(t)

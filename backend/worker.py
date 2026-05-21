@@ -22,6 +22,7 @@ from datetime import datetime
 from PIL import Image, ImageOps
 
 from backend import storage
+from backend.controlnet import ControlNetGenerator, ControlRequest
 from backend.db import SessionLocal, Task, Variant
 from backend.imgutils import fit_long_edge, fit_to_flux_bucket, image_to_png_bytes, sharpen
 from backend.pipeline import EditAborted, EditRequest, FluxEditor
@@ -41,6 +42,7 @@ class TaskWorker:
         editor: FluxEditor,
         vision: VisionAnalyzer | None = None,
         upscaler: Upscaler | None = None,
+        controlnet: ControlNetGenerator | None = None,
     ) -> None:
         self.editor = editor
         # Vision is optional so existing tests can construct the worker
@@ -50,6 +52,9 @@ class TaskWorker:
         # Real-ESRGAN upscaler — also optional. When omitted the worker
         # falls back to LANCZOS, which is the legacy behavior.
         self.upscaler = upscaler
+        # ControlNet generator — optional. Required for mode="control"
+        # tasks; tests don't need it.
+        self.controlnet = controlnet
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
@@ -115,6 +120,8 @@ class TaskWorker:
             try:
                 if t.mode == "auto_mask":
                     output_bytes = self._render_auto_mask(t, v)
+                elif t.mode == "control":
+                    output_bytes = self._render_control(t, v)
                 else:
                     output_bytes = self._render(t, v)
             except EditAborted as exc:
@@ -308,6 +315,56 @@ class TaskWorker:
         # The variant's output is the unchanged input image — keeps the
         # parent_variant_id chain transparent for the next step.
         return image_to_png_bytes(img)
+
+    def _render_control(self, t: Task, v: Variant) -> bytes:  # pragma: no cover — GPU + ControlNet
+        """Run FLUX ControlNet generation. The control image lives at
+        ``t.input_path`` (uploaded as the 'image' field — repurposed for
+        the conditioning map). All other params are sourced from
+        ``t.params`` per the standard flow.
+        """
+        if self.controlnet is None:
+            raise RuntimeError("control mode requires a ControlNetGenerator on TaskWorker")
+
+        if not t.input_path:
+            raise ValueError("control mode requires a control_image (uploaded as 'image')")
+
+        params = t.params or {}
+        control_type = params.get("control_type", "canny")
+        control_scale = float(params.get("control_scale", 0.7))
+        steps = int(params.get("steps", 28))
+        guidance = float(params.get("guidance", 3.5))
+        gen_width = int(params.get("gen_width", 1024))
+        gen_height = int(params.get("gen_height", 1024))
+
+        control_image = Image.open(t.input_path)
+        control_image = ImageOps.exif_transpose(control_image)
+
+        # ControlNet pipeline is heavy. Release any warm Flux editor
+        # components to free VRAM before loading. We don't auto-reload
+        # them afterwards — the next non-control task will pay the
+        # reload cost. Acceptable for a single-user desktop tool.
+        self.editor._release_intermediate_memory()
+
+        job_progress.start(total=steps, mode="control")
+        try:
+            req = ControlRequest(
+                prompt=t.prompt,
+                control_image=control_image,
+                control_type=control_type,
+                control_scale=control_scale,
+                steps=steps,
+                guidance=guidance,
+                seed=v.seed,
+                width=gen_width,
+                height=gen_height,
+            )
+            out = self.controlnet.generate(req)
+            job_progress.finish()
+        except Exception as exc:
+            job_progress.finish(error=str(exc))
+            raise
+
+        return image_to_png_bytes(out)
 
     def _render(self, t: Task, v: Variant) -> bytes:  # pragma: no cover — GPU inference path
         params = t.params or {}
