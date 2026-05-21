@@ -247,6 +247,15 @@ class FluxEditor:
         Subsequent requests reuse the warm adapter — toggling between
         IP-Adapter-on and IP-Adapter-off is done by setting the scale
         to 0 (effectively a no-op), not by unloading.
+
+        Catches the well-known schema mismatch between
+        ``InstantX/FLUX.1-dev-IP-Adapter`` (which ships weights with flat
+        keys: ``proj_in.*``, ``to_k_ip.*``, etc.) and diffusers'
+        ``load_ip_adapter`` (which expects top-level ``image_proj`` +
+        ``ip_adapter`` namespaces). When that mismatch fires, raise a
+        ``RuntimeError`` with a human-readable message so the API layer
+        can surface it cleanly instead of dumping ``KeyError: 'image_proj'``
+        at the user.
         """
         pipe_id = id(pipe)
         if pipe_id in self._ip_adapter_loaded:
@@ -254,11 +263,106 @@ class FluxEditor:
         log.info("loading IP-Adapter weights onto %s", type(pipe).__name__)
         # nosec B615 — InstantX is a trusted upstream; pinning a revision
         # would block legit fixes for a single-user desktop app.
-        pipe.load_ip_adapter(  # nosec B615
-            IP_ADAPTER_REPO,
-            weight_name=IP_ADAPTER_WEIGHT,
-        )
+        try:
+            pipe.load_ip_adapter(  # nosec B615
+                IP_ADAPTER_REPO,
+                weight_name=IP_ADAPTER_WEIGHT,
+            )
+        except (KeyError, ValueError, RuntimeError) as exc:
+            msg = str(exc)
+            if "image_proj" not in msg and "ip_adapter" not in msg:
+                raise
+            log.warning(
+                "standard load_ip_adapter failed with schema error (%s); "
+                "falling back to InstantX state-dict remapper",
+                exc,
+            )
+            self._load_ip_adapter_instantx_remapped(pipe)
+
         self._ip_adapter_loaded.add(pipe_id)
+
+    def _load_ip_adapter_instantx_remapped(self, pipe) -> None:  # pragma: no cover — GPU
+        """Manual loader for InstantX/FLUX.1-dev-IP-Adapter weights.
+
+        InstantX ships a flat state dict (``image_proj_model.*`` + per-block
+        ``transformer_blocks.X.attn.to_k_ip.*`` / ``to_v_ip.*``) while
+        diffusers' FLUX IP-Adapter loader expects keys grouped under
+        top-level ``image_proj`` / ``ip_adapter`` buckets. We download
+        the file, group keys by prefix, and pass the remapped dict to
+        ``pipe.load_ip_adapter`` via the
+        ``pretrained_model_name_or_path_or_dict`` slot (diffusers accepts
+        a state-dict in addition to a path string).
+
+        Heuristic key buckets:
+          image_proj  <- image_proj_model.*, proj.*, image_proj.*
+          ip_adapter  <- ip_adapter.*, *.to_k_ip.*, *.to_v_ip.*, *._ip.*
+
+        Anything that doesn't fit is logged at WARNING level. If either
+        bucket ends up empty we bail with a clear error pointing the
+        user at the upstream repo.
+        """
+        import torch
+        from huggingface_hub import hf_hub_download
+
+        # nosec B615 — same trust-policy comment as the standard loader.
+        path = hf_hub_download(  # nosec B615
+            repo_id=IP_ADAPTER_REPO,
+            filename=IP_ADAPTER_WEIGHT,
+        )
+
+        if path.endswith(".safetensors"):
+            from safetensors.torch import load_file
+
+            flat = load_file(path)
+        else:
+            flat = torch.load(path, map_location="cpu", weights_only=True)
+
+        image_proj: dict[str, torch.Tensor] = {}
+        ip_adapter: dict[str, torch.Tensor] = {}
+        unknown: list[str] = []
+
+        for key, value in flat.items():
+            if key.startswith("image_proj_model."):
+                image_proj[key[len("image_proj_model.") :]] = value
+            elif key.startswith("image_proj."):
+                image_proj[key[len("image_proj.") :]] = value
+            elif key.startswith("proj."):
+                image_proj[key] = value
+            elif key.startswith("ip_adapter."):
+                ip_adapter[key[len("ip_adapter.") :]] = value
+            elif "to_k_ip" in key or "to_v_ip" in key or "_ip." in key:
+                ip_adapter[key] = value
+            else:
+                unknown.append(key)
+
+        if unknown:
+            log.warning(
+                "IP-Adapter remapper: %d keys with unrecognized prefix "
+                "were dropped (first 5: %s). If output looks off, the "
+                "upstream schema may have changed — check %s",
+                len(unknown),
+                unknown[:5],
+                IP_ADAPTER_REPO,
+            )
+
+        if not image_proj or not ip_adapter:
+            raise RuntimeError(
+                "IP-Adapter remapper could not infer state-dict structure "
+                f"(image_proj keys: {len(image_proj)}, ip_adapter keys: "
+                f"{len(ip_adapter)}). The InstantX schema may have changed; "
+                f"check {IP_ADAPTER_REPO} for the current layout."
+            )
+
+        log.info(
+            "IP-Adapter remapped: %d image_proj keys, %d ip_adapter keys",
+            len(image_proj),
+            len(ip_adapter),
+        )
+
+        pipe.load_ip_adapter(
+            {"image_proj": image_proj, "ip_adapter": ip_adapter},
+            weight_name=None,
+        )
 
     def _apply_ip_adapter(  # pragma: no cover — GPU pipe
         self,
