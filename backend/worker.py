@@ -505,6 +505,26 @@ class TaskWorker:
         steps = int(params.get("steps", 28))
         guidance = float(params.get("guidance", 5.0))
 
+        # VRAM safety for video: FLUX defaults gen_width/gen_height to 1024,
+        # which is fine for image diffusion but blows up the 4D tensor for
+        # video. Wan 2.2 A14B (MoE, ~28 GB total weights) at 1024^2 x 81
+        # frames does not fit on a 16 GB card; even LTX strains. If the user
+        # left the FLUX-sized default (1024+), auto-clamp to a backend-
+        # appropriate target: LTX -> 768x512 (training resolution), Wan ->
+        # 832x480 (16:9 480p, Wan-native). Anything below 1024 is taken
+        # verbatim — the user knows what they want.
+        if gen_width >= 1024 or gen_height >= 1024:
+            if backend == "wan":
+                gen_width, gen_height = 832, 480
+            else:  # ltx
+                gen_width, gen_height = 768, 512
+            log.info(
+                "video: clamped FLUX-sized gen_width/gen_height to %dx%d for backend=%s",
+                gen_width,
+                gen_height,
+                backend,
+            )
+
         ref_image = None
         if subtype == "i2v":
             if not t.input_path:
