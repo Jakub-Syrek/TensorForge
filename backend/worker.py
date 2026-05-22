@@ -502,20 +502,36 @@ class TaskWorker:
         fps = int(params.get("fps", 24))
         gen_width = int(params.get("gen_width", 768))
         gen_height = int(params.get("gen_height", 512))
+        # Steps: 28 is fine for LTX-distilled (4-8 actually works there).
+        # Wan 2.2 TI2V-5B was trained with 50 denoising steps and shows
+        # severe temporal flicker / shimmer when run below ~40 — the
+        # diffusion has not converged in the latent before VAE decode,
+        # so adjacent frames drift visibly. The frontend sends the global
+        # `steps` slider value (defaults to 28 for FLUX image modes) when
+        # the user submits a video task, so we treat steps==28 as "FLUX
+        # default that was not raised for video" and auto-bump to 50 for
+        # Wan. Anything explicitly set above 28 is taken verbatim.
         steps = int(params.get("steps", 28))
+        if backend == "wan" and steps <= 28:
+            log.info("video: bumping steps %d -> 50 for Wan TI2V-5B", steps)
+            steps = 50
         guidance = float(params.get("guidance", 5.0))
 
         # VRAM safety for video: FLUX defaults gen_width/gen_height to 1024,
         # which is fine for image diffusion but blows up the 4D tensor for
-        # video. Wan 2.2 A14B (MoE, ~28 GB total weights) at 1024^2 x 81
-        # frames does not fit on a 16 GB card; even LTX strains. If the user
-        # left the FLUX-sized default (1024+), auto-clamp to a backend-
-        # appropriate target: LTX -> 768x512 (training resolution), Wan ->
-        # 832x480 (16:9 480p, Wan-native). Anything below 1024 is taken
-        # verbatim — the user knows what they want.
+        # video. If the user left the FLUX-sized default (1024+), auto-clamp
+        # to a backend-appropriate target:
+        #   * LTX -> 768x512 (LTX-Video training resolution)
+        #   * Wan -> 1280x704 (Wan 2.2 TI2V-5B native 720p training res).
+        #     We used to clamp to 832x480 (Wan 2.1 default), but TI2V-5B
+        #     produces visible artifacts ("trzeszczenie") below its
+        #     training resolution because the temporal layers were not
+        #     trained on smaller spatial extents. 1280x704 fits on a
+        #     16 GB card with enable_model_cpu_offload at num_frames=81.
+        # Anything below 1024 is taken verbatim — the user knows what they want.
         if gen_width >= 1024 or gen_height >= 1024:
             if backend == "wan":
-                gen_width, gen_height = 832, 480
+                gen_width, gen_height = 1280, 704
             else:  # ltx
                 gen_width, gen_height = 768, 512
             log.info(
