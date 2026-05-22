@@ -69,7 +69,7 @@ main {
 
 .row { display: flex; flex-direction: column; gap: 6px; }
 .row.mode-row, .row.brush-row, .row.params, .row.outpaint-row, .row.control-row, .row.pulid-row, .row.ipa-row, .row.video-row { flex-direction: row; align-items: center; gap: 10px; }
-.row.outpaint-row, .row.control-row, .row.pulid-row, .row.ipa-row, .row.video-row { flex-wrap: wrap; }
+.row.params, .row.outpaint-row, .row.control-row, .row.pulid-row, .row.ipa-row, .row.video-row { flex-wrap: wrap; }
 .row.outpaint-row label, .row.control-row label, .row.pulid-row label, .row.ipa-row label, .row.video-row label {
   display: flex; flex-direction: column; gap: 4px;
   font-size: 11px; color: var(--muted);
@@ -118,19 +118,23 @@ textarea { min-height: 110px; resize: vertical; }
 }
 .dropzone:hover, .dropzone.drag { border-color: var(--accent); color: var(--fg); }
 
-.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+/* Segmented mode picker — wraps onto multiple rows when the panel is
+   too narrow to hold every mode horizontally. Without wrapping, modes
+   added later (video / PuLID / IP-Adapter / …) get clipped off the
+   right edge and become invisible. */
+.seg { display: flex; flex-wrap: wrap; gap: 4px; }
 .seg-btn {
   background: var(--panel-2);
   color: var(--muted);
-  border: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
   padding: 7px 12px;
   font-family: var(--mono);
   font-size: 12px;
   cursor: pointer;
 }
 .seg-btn:hover { color: var(--fg); }
-.seg-btn.active { background: var(--accent); color: #1a0f08; font-weight: 600; }
-.seg-btn + .seg-btn { border-left: 1px solid var(--border); }
+.seg-btn.active { background: var(--accent); color: #1a0f08; font-weight: 600; border-color: var(--accent); }
 
 button {
   background: var(--panel-2);
