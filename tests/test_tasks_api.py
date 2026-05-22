@@ -317,3 +317,118 @@ def test_delete_task_removes_db_and_storage(client, app_env, tmp_path):
     with d.get_session() as session:
         assert session.get(d.Task, tid) is None
     assert not (tmp_path / "tasks" / tid).exists()
+
+
+# ---------------------------------------------------------------------------
+# Video mode
+# ---------------------------------------------------------------------------
+
+
+def test_video_t2v_accepted_without_image(client):
+    """mode=video, subtype=t2v: pure text-to-video, no input image needed."""
+    r = client.post(
+        "/api/tasks",
+        data={
+            "mode": "video",
+            "prompt": "a cat riding a skateboard",
+            "video_backend": "ltx",
+            "video_subtype": "t2v",
+            "num_frames": "49",
+            "fps": "24",
+        },
+    )
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["mode"] == "video"
+    assert body["params"]["video_backend"] == "ltx"
+    assert body["params"]["video_subtype"] == "t2v"
+    assert body["params"]["num_frames"] == 49
+    assert body["params"]["fps"] == 24
+
+
+def test_video_i2v_rejected_without_image(client):
+    """mode=video, subtype=i2v: must reject when no reference image attached."""
+    r = client.post(
+        "/api/tasks",
+        data={
+            "mode": "video",
+            "prompt": "the figure turns its head",
+            "video_backend": "wan",
+            "video_subtype": "i2v",
+        },
+    )
+    assert r.status_code == 400
+
+
+def test_video_i2v_accepted_with_image(client):
+    r = client.post(
+        "/api/tasks",
+        data={
+            "mode": "video",
+            "prompt": "the figure turns its head",
+            "video_backend": "wan",
+            "video_subtype": "i2v",
+        },
+        files={"image": ("in.png", _png_bytes(), "image/png")},
+    )
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["mode"] == "video"
+    assert body["params"]["video_backend"] == "wan"
+    assert body["params"]["video_subtype"] == "i2v"
+
+
+def test_video_unknown_backend_rejected(client):
+    r = client.post(
+        "/api/tasks",
+        data={
+            "mode": "video",
+            "prompt": "x",
+            "video_backend": "sora",
+            "video_subtype": "t2v",
+        },
+    )
+    assert r.status_code == 400
+
+
+def test_video_unknown_subtype_rejected(client):
+    r = client.post(
+        "/api/tasks",
+        data={
+            "mode": "video",
+            "prompt": "x",
+            "video_backend": "ltx",
+            "video_subtype": "v2v",
+        },
+    )
+    assert r.status_code == 400
+
+
+def test_variant_output_returns_video_mp4_for_mp4_path(client, app_env):
+    """Confirm the variant output endpoint serves .mp4 with video/mp4
+    media type, not image/png."""
+    _srv, d, s = app_env
+    r = client.post(
+        "/api/tasks",
+        data={
+            "mode": "video",
+            "prompt": "x",
+            "video_backend": "ltx",
+            "video_subtype": "t2v",
+        },
+    )
+    tid = r.json()["id"]
+    with d.get_session() as session:
+        v = session.get(d.Task, tid).variants[0]
+        v.status = "done"
+        # Pretend the worker produced an MP4 — payload is irrelevant for the
+        # routing test; only the suffix matters for media-type resolution.
+        fake_mp4 = b"\x00\x00\x00\x18ftypmp42fake-mp4-payload"
+        v.output_path = str(s.save_variant_output(tid, v.id, fake_mp4, ext=".mp4"))
+        session.commit()
+        vid = v.id
+
+    r2 = client.get(f"/api/variants/{vid}/output")
+    assert r2.status_code == 200
+    assert r2.headers["content-type"] == "video/mp4"
+    assert r2.content == fake_mp4

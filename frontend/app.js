@@ -336,6 +336,7 @@ document.querySelectorAll(".seg-btn").forEach(btn => {
     $("controlRow").classList.toggle("hidden", state.mode !== "control");
     $("pulidRow").classList.toggle("hidden", state.mode !== "pulid");
     $("ipaRow").classList.toggle("hidden", state.mode !== "ipa");
+    $("videoRow").classList.toggle("hidden", state.mode !== "video");
     maskCanvas.style.pointerEvents = state.mode === "inpaint" ? "auto" : "none";
     // Auto-adjust params only when switching to a mode with materially
     // different defaults (Qwen needs ~50 steps; Flux modes need ~28).
@@ -518,14 +519,22 @@ async function runEdit() {
     return runPipeline(prompt);
   }
 
-  // Image is required for every mode except generate; auto resolves
-  // server-side so we accept it even without an image.
-  const needsImage = !(state.mode === "generate" || (state.mode === "auto" && !state.imageFile));
+  // Image is required for every mode except generate and video/t2v; auto
+  // resolves server-side so we accept it even without an image.
+  const isTextOnlyVideo = state.mode === "video" && ($("videoSubtype").value || "t2v") === "t2v";
+  const needsImage = !(
+    state.mode === "generate" ||
+    (state.mode === "auto" && !state.imageFile) ||
+    isTextOnlyVideo
+  );
   if (needsImage && !state.imageFile) return setStatus("upload an image first", "err");
   if (state.mode === "inpaint" && !state.maskDirty) return setStatus("paint a mask first", "err");
   if (state.mode === "control" && !state.imageFile) return setStatus("upload a control image first (canny / depth / pose)", "err");
   if (state.mode === "pulid" && !state.imageFile) return setStatus("upload a face reference photo first", "err");
   if (state.mode === "ipa" && !state.imageFile) return setStatus("upload a reference image first (artwork / photo for style)", "err");
+  if (state.mode === "video" && ($("videoSubtype").value || "t2v") === "i2v" && !state.imageFile) {
+    return setStatus("upload a reference image first (the starting frame for image-to-video)", "err");
+  }
 
   // Outpainting reuses FLUX Fill — we build an extended canvas with the
   // original image inset by the chosen padding and a mask that covers
@@ -587,6 +596,12 @@ async function runEdit() {
   }
   if (state.mode === "pulid") {
     fd.append("id_scale", $("idScale").value || "1.0");
+  }
+  if (state.mode === "video") {
+    fd.append("video_backend", $("videoBackend").value || "ltx");
+    fd.append("video_subtype", $("videoSubtype").value || "t2v");
+    fd.append("num_frames", $("numFrames").value || "81");
+    fd.append("fps", $("fps").value || "24");
   }
   if (state.mode === "inpaint") {
     fd.append("mask", await maskBlob(), "mask.png");
@@ -814,6 +829,11 @@ function renderTaskResult(task) {
   wrap.innerHTML = "";
   state.currentTask = task;
 
+  // Task mode tells us whether the variant outputs are video files; the
+  // FileResponse from /api/variants/:id/output already sets the right
+  // media type but the DOM element type still has to match.
+  const isVideoTask = task.mode === "video";
+
   if (task.variants.length === 1) {
     const v = task.variants[0];
     if (v.status !== "done") {
@@ -822,14 +842,22 @@ function renderTaskResult(task) {
       ph.textContent = v.status + (v.error ? `: ${v.error}` : "");
       wrap.appendChild(ph);
     } else {
-      const img = document.createElement("img");
-      img.id = "result";
-      img.src = v.output_url;
-      wrap.appendChild(img);
+      const el = isVideoTask ? document.createElement("video") : document.createElement("img");
+      el.id = "result";
+      el.src = v.output_url;
+      if (isVideoTask) {
+        el.controls = true;
+        el.loop = true;
+        el.muted = true;
+        el.autoplay = true;
+        el.playsInline = true;
+      }
+      wrap.appendChild(el);
       state.lastResultUrl = v.output_url;
       state.lastVariantId = v.id;
       $("seed").value = v.seed;
       $("download").href = v.output_url;
+      $("download").download = isVideoTask ? "edit.mp4" : "edit.png";
       setStatus(`done · seed ${v.seed}`, "ok");
     }
   } else {
@@ -1001,6 +1029,7 @@ async function loadHistoryEntry(item) {
     $("controlRow").classList.toggle("hidden", item.mode !== "control");
     $("pulidRow").classList.toggle("hidden", item.mode !== "pulid");
     $("ipaRow").classList.toggle("hidden", item.mode !== "ipa");
+    $("videoRow").classList.toggle("hidden", item.mode !== "video");
     maskCanvas.style.pointerEvents = item.mode === "inpaint" ? "auto" : "none";
   }
   if (item.steps) $("steps").value = item.steps;

@@ -44,6 +44,7 @@
           <button type="button" data-mode="control" class="seg-btn" title="FLUX ControlNet (Union-Pro) — generation conditioned on a structural map. Upload a canny / depth / pose image, the model follows that geometry while filling style + texture from the prompt. ~30 GB on disk (FLUX.1-dev + ControlNet), ~8 GB VRAM under NF4. First call downloads the weights.">control</button>
           <button type="button" data-mode="pulid" class="seg-btn" title="PuLID face-identity preservation. Upload a face photo, prompt drives the scene, model keeps the face recognizable across stylization. Requires insightface (pip install insightface onnxruntime). ~30 GB disk, ~7 GB VRAM under NF4. Experimental — PuLID-FLUX integration is community-maintained.">PuLID</button>
           <button type="button" data-mode="ipa" class="seg-btn" title="IP-Adapter (InstantX FLUX) — image-as-prompt style transfer. Upload a reference image (artwork / photo / concept art), prompt drives the new scene, FLUX inherits the reference's aesthetic + composition. ~25 GB disk (FLUX.1-dev shared with ControlNet/PuLID + ~1 GB adapter + ~1.5 GB SigLIP), ~8 GB VRAM under NF4. Uses InstantX's custom pipeline (vendored).">IP-Adapter</button>
+          <button type="button" data-mode="video" class="seg-btn" title="Text-to-video / image-to-video. Two backends: LTX-Video (fast, ~30s/clip, lower fidelity) or Wan 2.2 (HQ, ~3 min/clip, best open-source quality). For i2v upload a reference image as the first frame. Output is an MP4. Heaviest pipeline in the project — cannot coexist with warm FLUX state.">video</button>
         </div>
       </div>
 
@@ -124,6 +125,24 @@
         <label title="Number of variants to generate (different seeds, same prompt + params). 1 = direct run; 2-8 = pick the best afterwards. Worker is single-GPU so variants run sequentially.">variants <input id="variants" type="number" min="1" max="8" value="1" /></label>
       </div>
 
+      <div class="row video-row hidden" id="videoRow">
+        <label title="Which video backend to use. LTX (Lightricks) — distilled, ~30s for a 5s clip at 768x512, lower fidelity. Wan 2.2 (Alibaba) — best open-source quality late 2025, ~3 min for a 5s clip at 720p. Wan needs ~14 GB VRAM, LTX ~6-9 GB.">backend
+          <select id="videoBackend">
+            <option value="ltx" selected>LTX (fast)</option>
+            <option value="wan">Wan 2.2 (HQ)</option>
+          </select>
+        </label>
+        <label title="t2v = text-to-video from the prompt alone. i2v = image-to-video; the uploaded image becomes/anchors the first frame and the prompt describes motion.">subtype
+          <select id="videoSubtype">
+            <option value="t2v" selected>text → video</option>
+            <option value="i2v">image → video</option>
+          </select>
+        </label>
+        <label title="Number of frames to render. LTX is trained near 97 frames; Wan around 81. Output duration = num_frames / fps.">frames <input id="numFrames" type="number" min="8" max="257" step="1" value="81" /></label>
+        <label title="Output framerate. 24 is the native training rate for both backends. Lowering stretches motion; raising loses fidelity.">fps <input id="fps" type="number" min="8" max="60" step="1" value="24" /></label>
+        <span class="muted small">heavy pipeline — first call downloads several GB. Cannot coexist with warm Kontext / ControlNet / PuLID / IPA on a 16 GB card; the worker releases editor state before loading.</span>
+      </div>
+
       <div class="row ipa-row hidden" id="ipaRow">
         <label title="IP-Adapter conditioning strength. 0.5-0.8 typical; below 0.5 reference is barely visible, above 1.0 the reference dominates the prompt.">ref strength
           <input id="ipScale" type="number" step="0.05" min="0" max="2" value="0.7" />
@@ -196,6 +215,7 @@
         </div>
         <div class="result-wrap hidden" id="resultWrap">
           <img id="result" alt="" />
+          <video id="resultVideo" class="hidden" controls loop muted></video>
         </div>
       </div>
       <div class="row result-row">

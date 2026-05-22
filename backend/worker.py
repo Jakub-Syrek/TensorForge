@@ -31,6 +31,7 @@ from backend.progress import job_progress
 from backend.pulid import PuLIDGenerator, PuLIDRequest
 from backend.storage import save_variant_output
 from backend.upscale import Upscaler
+from backend.video import VideoGenerator, VideoRequest
 from backend.vision import VisionAnalyzer
 
 log = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ class TaskWorker:
         controlnet: ControlNetGenerator | None = None,
         pulid: PuLIDGenerator | None = None,
         ipa: IPAdapterGenerator | None = None,
+        video: VideoGenerator | None = None,
     ) -> None:
         self.editor = editor
         # Vision is optional so existing tests can construct the worker
@@ -65,6 +67,9 @@ class TaskWorker:
         # IP-Adapter generator (InstantX custom stack) — optional.
         # Required for mode="ipa" tasks (reference-image style transfer).
         self.ipa = ipa
+        # Video generator (LTX-Video + Wan 2.2) — optional. Required for
+        # mode="video" tasks (text-to-video, image-to-video).
+        self.video = video
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
@@ -136,6 +141,8 @@ class TaskWorker:
                     output_bytes = self._render_pulid(t, v)
                 elif t.mode == "ipa":
                     output_bytes = self._render_ipa(t, v)
+                elif t.mode == "video":
+                    output_bytes = self._render_video(t, v)
                 else:
                     output_bytes = self._render(t, v)
             except EditAborted as exc:
@@ -154,7 +161,11 @@ class TaskWorker:
                 s.commit()
                 return
 
-            path = save_variant_output(t.id, v.id, output_bytes)
+            # Video variants are .mp4; everything else is .png. The DB
+            # column stores the path verbatim, so /api/variants/{id}/output
+            # infers the media type from the suffix.
+            output_ext = ".mp4" if t.mode == "video" else ".png"
+            path = save_variant_output(t.id, v.id, output_bytes, ext=output_ext)
             v.output_path = str(path)
             v.status = "done"
             v.finished_at = datetime.utcnow()
@@ -467,6 +478,71 @@ class TaskWorker:
             job_progress.finish(error=str(exc))
             raise
         return image_to_png_bytes(out)
+
+    def _render_video(self, t: Task, v: Variant) -> bytes:  # pragma: no cover — GPU + video
+        """Run a text-to-video or image-to-video generation.
+
+        Params (from ``t.params``):
+          - ``video_backend``: 'ltx' (fast) or 'wan' (HQ).
+          - ``video_subtype``: 't2v' or 'i2v'. i2v requires ``t.input_path``.
+          - ``num_frames``, ``fps``, ``gen_width``, ``gen_height``,
+            ``steps``, ``guidance``.
+
+        Returns the encoded MP4 bytes. The worker saves them with
+        ``.mp4`` extension and the variant endpoint serves them with
+        ``video/mp4`` media type.
+        """
+        if self.video is None:
+            raise RuntimeError("video mode requires a VideoGenerator on TaskWorker")
+
+        params = t.params or {}
+        backend = params.get("video_backend", "ltx")
+        subtype = params.get("video_subtype", "t2v")
+        num_frames = int(params.get("num_frames", 81))
+        fps = int(params.get("fps", 24))
+        gen_width = int(params.get("gen_width", 768))
+        gen_height = int(params.get("gen_height", 512))
+        steps = int(params.get("steps", 28))
+        guidance = float(params.get("guidance", 5.0))
+
+        ref_image = None
+        if subtype == "i2v":
+            if not t.input_path:
+                raise ValueError("video i2v requires a reference image (uploaded as 'image')")
+            ref_image = Image.open(t.input_path)
+            ref_image = ImageOps.exif_transpose(ref_image)
+
+        # Video pipelines are the heaviest thing we run; release the
+        # FluxEditor's intermediate buffers first to free VRAM. Same
+        # pattern as ControlNet / PuLID / IPA dispatch.
+        self.editor._release_intermediate_memory()
+
+        # Per-step progress so the UI shows a moving bar instead of
+        # freezing for minutes. We don't currently hook diffusers'
+        # callback for video (subtle differences across pipelines), so
+        # this is start-then-finish only — the GPU stats card still
+        # updates from /api/progress's gpu side.
+        job_progress.start(total=steps, mode="video")
+        try:
+            req = VideoRequest(
+                backend=backend,
+                subtype=subtype,
+                prompt=t.prompt,
+                ref_image=ref_image,
+                num_frames=num_frames,
+                fps=fps,
+                width=gen_width,
+                height=gen_height,
+                steps=steps,
+                guidance=guidance,
+                seed=v.seed,
+            )
+            out_bytes = self.video.generate(req)
+            job_progress.finish()
+        except Exception as exc:
+            job_progress.finish(error=str(exc))
+            raise
+        return out_bytes
 
     def _render(self, t: Task, v: Variant) -> bytes:  # pragma: no cover — GPU inference path
         params = t.params or {}

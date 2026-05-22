@@ -60,6 +60,7 @@ from backend.progress import job_progress, query_gpu_stats
 from backend.prompt_rewriter import PromptRewriter
 from backend.pulid import PuLIDGenerator
 from backend.upscale import Upscaler
+from backend.video import VideoGenerator
 from backend.vision import VisionAnalyzer
 from backend.worker import TaskWorker
 
@@ -102,6 +103,12 @@ pulid = PuLIDGenerator()
 # GB SigLIP encoder). ~8 GB VRAM under NF4. Cannot coexist with warm
 # Kontext / ControlNet / PuLID on 16 GB.
 ipa = IPAdapterGenerator()
+# Video generator (LTX-Video + Wan 2.2) — lazy-loaded on the first
+# mode="video" task. Heaviest pipeline in the project: ~14 GB VRAM for
+# Wan 2.2 14B, ~6-9 GB for LTX. Cannot coexist with warm Kontext /
+# ControlNet / PuLID / IPA on 16 GB; worker releases the FluxEditor
+# state before loading.
+video = VideoGenerator()
 task_worker = TaskWorker(
     editor,
     vision=vision,
@@ -109,6 +116,7 @@ task_worker = TaskWorker(
     controlnet=controlnet,
     pulid=pulid,
     ipa=ipa,
+    video=video,
 )
 
 
@@ -425,6 +433,10 @@ async def create_task(
     control_type: str = Form("canny"),
     control_scale: float = Form(0.7),
     id_scale: float = Form(1.0),
+    video_backend: str = Form("ltx"),
+    video_subtype: str = Form("t2v"),
+    num_frames: int = Form(81),
+    fps: int = Form(24),
 ) -> JSONResponse:
     """Enqueue an edit/generate task. Returns task id and initial state.
 
@@ -448,6 +460,7 @@ async def create_task(
         "control",
         "pulid",
         "ipa",
+        "video",
     }
     if mode not in valid_modes:
         raise HTTPException(400, f"mode must be one of {sorted(valid_modes)}, got {mode!r}")
@@ -467,6 +480,22 @@ async def create_task(
         raise HTTPException(400, "pulid requires a face reference (uploaded as 'image')")
     if mode == "ipa" and image is None:
         raise HTTPException(400, "ipa requires a reference image (uploaded as 'image')")
+    if mode == "video":
+        if video_backend not in {"ltx", "wan"}:
+            raise HTTPException(
+                400,
+                f"video_backend must be 'ltx' or 'wan', got {video_backend!r}",
+            )
+        if video_subtype not in {"t2v", "i2v"}:
+            raise HTTPException(
+                400,
+                f"video_subtype must be 't2v' or 'i2v', got {video_subtype!r}",
+            )
+        if video_subtype == "i2v" and image is None:
+            raise HTTPException(
+                400,
+                "video i2v requires a reference image (uploaded as 'image')",
+            )
     clamped_control_scale = max(0.0, min(2.0, float(control_scale)))
     clamped_id_scale = max(0.0, min(2.0, float(id_scale)))
 
@@ -476,7 +505,9 @@ async def create_task(
         routing = classify_intent(prompt, has_image=image is not None)
         mode = "kontext" if routing["intent"] == "edit" else "generate"
 
-    if mode != "generate" and image is None:
+    # Modes that genuinely need no input image: text-to-image and text-to-video.
+    image_optional = mode == "generate" or (mode == "video" and video_subtype == "t2v")
+    if not image_optional and image is None:
         raise HTTPException(400, f"mode {mode!r} requires an input image")
 
     variants_n = max(1, min(8, int(variants)))
@@ -550,6 +581,10 @@ async def create_task(
                 "control_type": control_type,
                 "control_scale": clamped_control_scale,
                 "id_scale": clamped_id_scale,
+                "video_backend": video_backend,
+                "video_subtype": video_subtype,
+                "num_frames": max(8, min(257, int(num_frames))),
+                "fps": max(8, min(60, int(fps))),
             },
         )
         s.add(t)
@@ -792,6 +827,16 @@ def get_pipeline(pipeline_id: str) -> JSONResponse:
         )
 
 
+_OUTPUT_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+}
+
+
 @app.get("/api/variants/{variant_id}/output")
 def variant_output(variant_id: str) -> FileResponse:
     with get_session() as s:
@@ -803,7 +848,8 @@ def variant_output(variant_id: str) -> FileResponse:
         p = Path(v.output_path)
         if not p.exists():
             raise HTTPException(410, "output file gone (was the task deleted?)")
-        return FileResponse(p, media_type="image/png")
+        media_type = _OUTPUT_MEDIA_TYPES.get(p.suffix.lower(), "application/octet-stream")
+        return FileResponse(p, media_type=media_type)
 
 
 @app.post("/api/edit")
