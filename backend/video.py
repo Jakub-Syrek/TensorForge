@@ -51,12 +51,27 @@ log = logging.getLogger(__name__)
 # can swap via env vars if they want a different revision.
 LTX_T2V_MODEL = "Lightricks/LTX-Video"
 LTX_I2V_MODEL = "Lightricks/LTX-Video"  # same checkpoint, separate pipeline class
-# Wan 2.2 ships as MoE-style "A14B" (Active 14B params, ~28B total) on
-# HuggingFace. The flat "14B" variant is Wan 2.1; for 2.2 the suffix is
-# A14B and there's no separate 720P repo — resolution is set at inference
-# time. Repo IDs verified via huggingface_hub.HfApi.list_models on Wan-AI.
-WAN_T2V_MODEL = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
-WAN_I2V_MODEL = "Wan-AI/Wan2.2-I2V-A14B-Diffusers"
+# Wan 2.2 has two SKUs on HuggingFace:
+#
+#   * A14B — two separate checkpoints (T2V / I2V), each a MoE with two
+#     14B experts (transformer + transformer_2). ~56 GB on disk per
+#     checkpoint. At load time diffusers mmaps BOTH experts before
+#     freeing the first, so peak virtual-memory commit reaches ~120 GB.
+#     Below that, Windows raises os error 1455 ("page file too small")
+#     from safetensors.safe_open during the second expert's shards. We
+#     burned multiple hours trying to crank Windows page file high
+#     enough; at 128 GB it still crashes mid-load.
+#
+#   * TI2V-5B — UNIFIED text+image-to-video, smaller MoE (5B+5B), uses
+#     the same WanPipeline class for both subtypes. ~20 GB total
+#     working set. Fits on a 16 GB / 32 GB RAM machine without
+#     thrashing the page file. Quality below A14B but well above LTX.
+#
+# We default to TI2V-5B because A14B is effectively unreachable on a
+# single-consumer-GPU + 32 GB RAM box. Users with workstation-class
+# RAM (128+ GB) can swap to A14B via env override.
+WAN_T2V_MODEL = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+WAN_I2V_MODEL = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"  # unified — same checkpoint as T2V
 
 VideoBackend = Literal["ltx", "wan"]
 VideoSubtype = Literal["t2v", "i2v"]
@@ -210,21 +225,18 @@ class VideoGenerator:
     def _load_wan(self, subtype: VideoSubtype):  # pragma: no cover — GPU + downloads
         """Instantiate the Wan 2.2 pipeline for the requested subtype.
 
-        Wan ships as a separate t2v vs i2v checkpoint (~28 GB each on
-        disk). They share the T5 + VAE — diffusers loads them once and
-        reuses across pipelines, but the transformer is distinct.
+        We use the unified TI2V-5B checkpoint for both subtypes
+        (``WAN_T2V_MODEL`` and ``WAN_I2V_MODEL`` point at the same repo
+        on purpose). Diffusers' ``WanPipeline`` accepts an optional
+        ``image`` kwarg at call time and routes internally — there's no
+        separate ``WanImageToVideoPipeline`` for TI2V-5B. Subtype is
+        honored at inference time by ``_invoke_pipe``, which adds the
+        ``image`` arg for i2v.
         """
-        if subtype == "t2v":
-            from diffusers import WanPipeline  # type: ignore[import-not-found]
+        from diffusers import WanPipeline  # type: ignore[import-not-found]
 
-            return WanPipeline.from_pretrained(  # nosec B615
-                WAN_T2V_MODEL, torch_dtype=self._dtype
-            )
-        from diffusers import WanImageToVideoPipeline  # type: ignore[import-not-found]
-
-        return WanImageToVideoPipeline.from_pretrained(  # nosec B615
-            WAN_I2V_MODEL, torch_dtype=self._dtype
-        )
+        repo = WAN_T2V_MODEL if subtype == "t2v" else WAN_I2V_MODEL
+        return WanPipeline.from_pretrained(repo, torch_dtype=self._dtype)  # nosec B615
 
     # ------------------------------------------------------------------
     # Inference
