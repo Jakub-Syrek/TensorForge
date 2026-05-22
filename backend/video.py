@@ -225,18 +225,32 @@ class VideoGenerator:
     def _load_wan(self, subtype: VideoSubtype):  # pragma: no cover — GPU + downloads
         """Instantiate the Wan 2.2 pipeline for the requested subtype.
 
-        We use the unified TI2V-5B checkpoint for both subtypes
-        (``WAN_T2V_MODEL`` and ``WAN_I2V_MODEL`` point at the same repo
-        on purpose). Diffusers' ``WanPipeline`` accepts an optional
-        ``image`` kwarg at call time and routes internally — there's no
-        separate ``WanImageToVideoPipeline`` for TI2V-5B. Subtype is
-        honored at inference time by ``_invoke_pipe``, which adds the
-        ``image`` arg for i2v.
-        """
-        from diffusers import WanPipeline  # type: ignore[import-not-found]
+        Both subtypes share the same TI2V-5B checkpoint (``WAN_T2V_MODEL``
+        and ``WAN_I2V_MODEL`` point at the same repo on purpose). The
+        pipeline *class* differs:
 
-        repo = WAN_T2V_MODEL if subtype == "t2v" else WAN_I2V_MODEL
-        return WanPipeline.from_pretrained(repo, torch_dtype=self._dtype)  # nosec B615
+        * ``t2v`` -> ``WanPipeline`` (no ``image`` kwarg at call time)
+        * ``i2v`` -> ``WanImageToVideoPipeline`` (requires ``image``)
+
+        Diffusers' ``WanImageToVideoPipeline`` keeps ``image_encoder`` as
+        an optional component and only calls it when
+        ``transformer.config.image_dim`` is not None — which it is on
+        Wan 2.1 I2V but **not** on Wan 2.2 TI2V-5B. So we can construct
+        the I2V pipeline directly from the TI2V-5B checkpoint without
+        the CLIP image encoder; the unified DiT consumes the reference
+        frame via VAE latents instead of CLIP embeddings.
+        """
+        if subtype == "t2v":
+            from diffusers import WanPipeline  # type: ignore[import-not-found]
+
+            return WanPipeline.from_pretrained(  # nosec B615
+                WAN_T2V_MODEL, torch_dtype=self._dtype
+            )
+        from diffusers import WanImageToVideoPipeline  # type: ignore[import-not-found]
+
+        return WanImageToVideoPipeline.from_pretrained(  # nosec B615
+            WAN_I2V_MODEL, torch_dtype=self._dtype
+        )
 
     # ------------------------------------------------------------------
     # Inference
