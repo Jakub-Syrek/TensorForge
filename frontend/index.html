@@ -25,9 +25,12 @@
       </div>
 
       <div class="row analyze-row hidden" id="analyzeRow">
-        <button type="button" id="analyzeFastBtn" title="BLIP-large caption (single sentence) + DETR object chips. ~0.9 GB VRAM, fast. Click a chip to insert its label into the prompt.">fast analyze</button>
-        <button type="button" id="analyzeDeepBtn" title="BLIP-2 OPT-2.7B caption (multi-sentence, richer detail with spatial relations) + DETR object chips. ~5.4 GB VRAM, slower first-load. Use when the fast caption isn't enough.">deep analyze</button>
-        <button type="button" id="bgRemoveBtn" title="Isolate the subject from the background using BiRefNet. Result loads as the new input image with a transparent background — feed it to FLUX Fill for a fresh backdrop.">remove bg</button>
+        <button type="button" id="analyzeFastBtn" title="FAST ANALYZE — describe what's in the image in one sentence + chips of detected objects.&#10;&#10;Use when you want a quick caption to copy into the prompt, or to see what the model thinks is in the scene before editing. Click any chip to insert that label into the prompt textarea.&#10;&#10;Tech: BLIP-large (single-sentence caption) + DETR (object detection). ~0.9 GB VRAM, ~1 s on a warm model.">fast analyze</button>
+
+        <button type="button" id="analyzeDeepBtn" title="DEEP ANALYZE — multi-sentence caption with spatial relations + the same object chips.&#10;&#10;Use when the fast caption is too short: deep gives 'A woman in a green dress sits on a moss-covered boulder by an alpine lake, mountains rising behind her' instead of just 'a woman by a lake'. Slower first call (model download).&#10;&#10;Tech: BLIP-2 OPT-2.7B + DETR. ~5.4 GB VRAM.">deep analyze</button>
+
+        <button type="button" id="bgRemoveBtn" title="REMOVE BG — isolate the subject from the background.&#10;&#10;Result loads as the new input image with a transparent background. Feed it to FLUX Fill (inpaint) with a new prompt to get the subject onto a fresh backdrop, or download as PNG with alpha.&#10;&#10;Tech: BiRefNet (via rembg / onnxruntime). Runs on CPU — no VRAM cost, ~2-4 s per image.">remove bg</button>
+
         <span id="analyzeStatus" class="muted small"></span>
         <div class="analyze-caption muted small" id="analyzeCaption"></div>
         <div class="analyze-chips" id="analyzeChips"></div>
@@ -35,80 +38,93 @@
 
       <div class="row mode-row">
         <div class="seg">
-          <button type="button" data-mode="auto" class="seg-btn active" title="Auto: routes to Kontext (edit) or Schnell (generate) based on the first word of the prompt and whether an image is uploaded">auto</button>
-          <button type="button" data-mode="kontext" class="seg-btn" title="FLUX.1 Kontext-dev — instruction edit, preserves composition">Kontext</button>
-          <button type="button" data-mode="inpaint" class="seg-btn" title="FLUX.1 Fill-dev — regenerates the masked region only">inpaint</button>
-          <button type="button" data-mode="qwen" class="seg-btn" title="Qwen-Image-Edit — alternative instruction edit (Qwen2-VL text encoder, ~50 steps default)">Qwen edit</button>
-          <button type="button" data-mode="generate" class="seg-btn" title="FLUX.1 schnell — 4-step text-to-image, no input image needed">generate</button>
-          <button type="button" data-mode="outpaint" class="seg-btn" title="Extend the canvas in any direction(s). Pad area is filled with black, then FLUX.1 Fill regenerates only the new pixels using your prompt. Reuses the Fill model — no extra VRAM.">outpaint</button>
-          <button type="button" data-mode="control" class="seg-btn" title="FLUX ControlNet (Union-Pro) — generation conditioned on a structural map. Upload a canny / depth / pose image, the model follows that geometry while filling style + texture from the prompt. ~30 GB on disk (FLUX.1-dev + ControlNet), ~8 GB VRAM under NF4. First call downloads the weights.">control</button>
-          <button type="button" data-mode="pulid" class="seg-btn" title="PuLID face-identity preservation. Upload a face photo, prompt drives the scene, model keeps the face recognizable across stylization. Requires insightface (pip install insightface onnxruntime). ~30 GB disk, ~7 GB VRAM under NF4. Experimental — PuLID-FLUX integration is community-maintained.">PuLID</button>
-          <button type="button" data-mode="ipa" class="seg-btn" title="IP-Adapter (InstantX FLUX) — image-as-prompt style transfer. Upload a reference image (artwork / photo / concept art), prompt drives the new scene, FLUX inherits the reference's aesthetic + composition. ~25 GB disk (FLUX.1-dev shared with ControlNet/PuLID + ~1 GB adapter + ~1.5 GB SigLIP), ~8 GB VRAM under NF4. Uses InstantX's custom pipeline (vendored).">IP-Adapter</button>
-          <button type="button" data-mode="video" class="seg-btn" title="Text-to-video / image-to-video. Two backends: LTX-Video (fast, ~30s/clip, lower fidelity) or Wan 2.2 (HQ, ~3 min/clip, best open-source quality). For i2v upload a reference image as the first frame. Output is an MP4. Heaviest pipeline in the project — cannot coexist with warm FLUX state.">video</button>
+          <button type="button" data-mode="auto" class="seg-btn active" title="AUTO — let the server pick the right tool for you.&#10;&#10;Reads your prompt + whether an image is uploaded and routes to Kontext (edit verbs like 'add', 'remove', 'replace' with image) or generate (creation verbs like 'a cat on a chair', no image needed).&#10;&#10;Use this when you don't want to think about modes — just type and hit run.">auto</button>
+
+          <button type="button" data-mode="kontext" class="seg-btn" title="KONTEXT — edit an existing image with a text instruction.&#10;&#10;Upload an image + write what to change ('add a hat', 'make it night', 'replace the sky with stars'). Keeps the original composition; modifies only what you describe.&#10;&#10;Best mode for: dressing up a photo, adding/removing objects, style swaps that preserve layout.&#10;&#10;Tech: FLUX.1 Kontext-dev (DiT edit model). 28 steps, ~5 s on a warm pipe.">Kontext</button>
+
+          <button type="button" data-mode="inpaint" class="seg-btn" title="INPAINT — regenerate ONLY a region you paint a mask over.&#10;&#10;Upload an image, brush over the area to change, write what should appear in that region. Pixels outside the mask are kept bit-perfect.&#10;&#10;Best mode for: surgical edits, removing exact objects, fixing a specific spot. More precise than Kontext when you know WHERE.&#10;&#10;Tech: FLUX.1 Fill-dev. Pair with auto-mask (Florence-2 grounding) to skip manual brushing.">inpaint</button>
+
+          <button type="button" data-mode="qwen" class="seg-btn" title="QWEN EDIT — alternative instruction edit using Alibaba's Qwen-Image-Edit.&#10;&#10;Same idea as Kontext (image + instruction → modified image) but a different model family. Often better on typography, signage, in-image text edits.&#10;&#10;Use this as backup when Kontext's output isn't quite right — or when the edit involves readable text.&#10;&#10;Tech: Qwen-Image-Edit + Qwen2-VL text encoder, ~50 steps default.">Qwen edit</button>
+
+          <button type="button" data-mode="generate" class="seg-btn" title="GENERATE — text-to-image from scratch, no input image.&#10;&#10;Just a prompt: describes the scene, style, lighting, composition. Output is a fresh image in 4 steps.&#10;&#10;Best mode for: making something new, exploring ideas, generating from a written description only.&#10;&#10;Tech: FLUX.1 schnell (distilled 4-step). Pair with a Style LoRA to lock the aesthetic.">generate</button>
+
+          <button type="button" data-mode="outpaint" class="seg-btn" title="OUTPAINT — extend the canvas in any direction.&#10;&#10;Upload an image, set how many pixels to add on each side (top / right / bottom / left). The pad area is filled by FLUX from your prompt; the original image stays untouched.&#10;&#10;Best mode for: turning a portrait into a landscape, adding sky above a peak, widening a tight shot.&#10;&#10;Tech: reuses FLUX.1 Fill-dev (same model as inpaint) — pad mask is auto-built client-side.">outpaint</button>
+
+          <button type="button" data-mode="control" class="seg-btn" title="CONTROL — generate with a structural skeleton.&#10;&#10;Upload a control map (canny edges, depth map, or pose skeleton). FLUX follows that geometry rigidly while filling style/texture/color from your prompt.&#10;&#10;Best mode for: matching a specific pose, preserving exact composition, transferring layout from one image to a different style.&#10;&#10;Tech: Shakker-Labs ControlNet Union-Pro for FLUX. ~30 GB on disk, ~8 GB VRAM (NF4). Use controlnet_aux to make canny/depth/pose from a regular photo.">control</button>
+
+          <button type="button" data-mode="pulid" class="seg-btn" title="PuLID — keep a specific FACE across stylization.&#10;&#10;Upload a clear front-facing photo of someone. Prompt describes a new scene/style. PuLID injects that person's identity vector so they stay recognizable in the output.&#10;&#10;Best mode for: 'me as a Renaissance painting', 'my friend in a sci-fi setting' — anything where the FACE must remain identifiable.&#10;&#10;Tech: PuLID-FLUX + InsightFace (RetinaFace + ArcFace 512-dim embedding). ~7 GB VRAM (NF4).">PuLID</button>
+
+          <button type="button" data-mode="ipa" class="seg-btn" title="IP-ADAPTER — image-as-prompt style transfer.&#10;&#10;Upload a reference image (a painting, a photo, concept art). Prompt describes the new scene. FLUX inherits the reference's color palette, brushwork, composition, mood — without any verbal style description.&#10;&#10;Best mode for: 'in the style of this concept art', borrowing aesthetic from a single visual reference, matching a series without trying to describe what makes it consistent.&#10;&#10;Tech: InstantX FLUX IP-Adapter + SigLIP image encoder. Vendored custom pipeline. ~8 GB VRAM (NF4).">IP-Adapter</button>
+
+          <button type="button" data-mode="video" class="seg-btn" title="VIDEO — generate a short video clip (MP4) from a prompt and optionally a starting frame.&#10;&#10;Two backends:&#10;  • LTX-Video (fast)  — ~30 s for a 5 s clip, 768×512, lower fidelity. Great for iteration.&#10;  • Wan 2.2 (HQ)      — ~3 min for a 5 s clip, 720p, best open-source quality late 2025.&#10;&#10;Two subtypes:&#10;  • t2v — text only → video.&#10;  • i2v — text + reference image (becomes/anchors the first frame).&#10;&#10;Best mode for: animating an idea, short loops, motion studies. Output plays in-page as an HTML5 video.&#10;&#10;Heaviest pipeline in the project — cannot coexist with warm FLUX state, the worker releases it before loading.">video</button>
         </div>
       </div>
 
       <div class="row brush-row hidden" id="brushRow">
-        <label>brush <input id="brushSize" type="range" min="4" max="120" value="40" /></label>
-        <button type="button" id="clearMask">clear mask</button>
+        <label title="BRUSH SIZE — diameter (in image pixels) of the inpaint mask brush. Smaller for precise edges; larger for sweeping a region quickly.">brush <input id="brushSize" type="range" min="4" max="120" value="40" /></label>
+        <button type="button" id="clearMask" title="CLEAR MASK — erase everything you've painted on the mask layer. The input image stays untouched.">clear mask</button>
       </div>
 
       <div class="row pulid-row hidden" id="pulidRow">
-        <label title="Identity strength. 0.6-0.8 = looks like you with strong stylization. 1.0-1.2 = faithful face, lighter style. Above 1.5 = identity dominates, prompt becomes secondary.">id strength
+        <label title="ID STRENGTH — how strongly PuLID forces the uploaded face onto the output.&#10;&#10;0.6–0.8 = looks like the person, but the prompt's style dominates (loose interpretation).&#10;1.0–1.2 = faithful face, style is applied as a lighter touch (default range).&#10;1.5+    = identity dominates; the scene/style becomes secondary.&#10;&#10;Raise if the face doesn't look right. Lower if PuLID is forcing photo realism over your stylization.">id strength
           <input id="idScale" type="number" step="0.05" min="0" max="2" value="1.0" />
         </label>
         <span class="muted small">upload a clear, front-facing face photo as input. The prompt drives the scene; PuLID keeps the face recognizable across stylization.</span>
       </div>
 
       <div class="row control-row hidden" id="controlRow">
-        <label title="Conditioning type. canny = follow edge contours. depth = follow 3D structure (depth map). pose = follow OpenPose skeleton.">control type
+        <label title="CONTROL TYPE — what kind of structural map you're uploading.&#10;&#10;canny = edge contours (line drawing). Best for following silhouettes and details.&#10;depth = 3D structure (near = bright, far = dark). Best for matching spatial layout.&#10;pose  = OpenPose skeleton (stick figure with joints). Best for human posing.&#10;&#10;Use controlnet_aux Python lib or any preprocessor to make these from a regular photo before uploading.">control type
           <select id="controlType">
             <option value="canny" selected>canny (edges)</option>
             <option value="depth">depth (3D structure)</option>
             <option value="pose">pose (skeleton)</option>
           </select>
         </label>
-        <label title="ControlNet conditioning strength. 0.4-0.6 = light suggestion; 0.7-0.9 = strong adherence (default 0.7); above 1.0 = over-conditioned, output flattens. Adjust if the result ignores or over-fits the control image.">scale
+        <label title="CONTROL SCALE — how rigidly to follow the control map.&#10;&#10;0.4–0.6 = soft suggestion; model has freedom to reinterpret.&#10;0.7–0.9 = strong adherence (default 0.7); output closely matches the structure.&#10;1.0+    = over-conditioned; output starts looking flat or banded.&#10;&#10;Lower if the result is too literal / loses texture. Raise if it's ignoring the structure.">scale
           <input id="controlScale" type="number" step="0.05" min="0" max="2" value="0.7" />
         </label>
         <span class="muted small">upload the pre-processed control image as input (canny edges, depth map, or pose skeleton). Use tools like controlnet_aux to generate these from a regular photo.</span>
       </div>
 
       <div class="row outpaint-row hidden" id="outpaintRow">
-        <label title="Pixels to add above the image">top <input id="padTop" type="number" min="0" max="1024" step="32" value="256" /></label>
-        <label title="Pixels to add to the right">right <input id="padRight" type="number" min="0" max="1024" step="32" value="256" /></label>
-        <label title="Pixels to add below the image">bottom <input id="padBottom" type="number" min="0" max="1024" step="32" value="256" /></label>
-        <label title="Pixels to add to the left">left <input id="padLeft" type="number" min="0" max="1024" step="32" value="256" /></label>
+        <label title="TOP — how many pixels of new canvas to add ABOVE the original image. 256 px ≈ a third of a 720-px tall photo.">top <input id="padTop" type="number" min="0" max="1024" step="32" value="256" /></label>
+        <label title="RIGHT — how many pixels of new canvas to add to the RIGHT of the original.">right <input id="padRight" type="number" min="0" max="1024" step="32" value="256" /></label>
+        <label title="BOTTOM — how many pixels of new canvas to add BELOW the original.">bottom <input id="padBottom" type="number" min="0" max="1024" step="32" value="256" /></label>
+        <label title="LEFT — how many pixels of new canvas to add to the LEFT of the original.">left <input id="padLeft" type="number" min="0" max="1024" step="32" value="256" /></label>
         <span class="muted small">prompt describes what fills the extended area</span>
       </div>
 
       <div class="row auto-mask-row hidden" id="autoMaskRow">
         <input id="autoMaskText" type="text" placeholder="describe what to mask · e.g. 'the sky', 'her coat', 'the dragon'" />
-        <button type="button" id="autoMaskBtn" title="Florence-2 segments the described region — mask is painted onto the canvas, you can refine with brush before running inpaint">auto-mask</button>
+        <button type="button" id="autoMaskBtn" title="AUTO-MASK — let the AI mask the region you describe in words.&#10;&#10;Type what to mask ('the sky', 'her hair', 'the dragon in the back'), click — Florence-2 grounds the phrase in the image and paints the matching region as a mask. You can refine with the brush afterward.&#10;&#10;Skips the manual brushing step before inpaint. Pair: auto-mask 'the sky' → inpaint with prompt 'dramatic sunset clouds' = sky replacement without drawing anything.&#10;&#10;Tech: Florence-2 referring expression segmentation.">auto-mask</button>
         <span id="autoMaskStatus" class="muted small"></span>
       </div>
 
       <div class="row prompt-row">
         <textarea id="prompt" placeholder="e.g. 'replace the sky with a dramatic sunset' (Kontext) — or for inpaint: describe only what should appear inside the mask"></textarea>
         <div class="prompt-actions">
-          <button type="button" id="expandPromptBtn" title="Qwen2.5-1.5B rewrites your short prompt into a FLUX-style description packed with lighting, composition, lens cues. ~3 GB VRAM, ~1 s on a warm model. Result replaces the textarea — undo (Ctrl+Z in the textarea) brings the original back.">✨ expand</button>
+          <button type="button" id="expandPromptBtn" title="EXPAND — rewrite a short prompt into a full FLUX-style description.&#10;&#10;Turns 'cat on a chair' into 'a tabby cat lounging on a worn leather armchair by a sunlit window, dust motes drifting in the warm light, shallow depth of field, photorealistic, 50mm lens'.&#10;&#10;Better prompts → better images. The result replaces your textarea — Ctrl+Z inside the textarea brings the original back.&#10;&#10;Tech: Qwen2.5-1.5B-Instruct. ~3 GB VRAM, ~1 s on a warm model.">✨ expand</button>
         </div>
         <span id="expandStatus" class="muted small"></span>
       </div>
 
       <div class="row pipeline-row">
-        <label class="pipeline-toggle" title="When on, each non-empty line of the prompt is a separate step. Prefix a line with [mode] (e.g. [generate], [kontext], [auto_mask]) to force that model. Use [auto_mask] <phrase> followed by [inpaint] for 'segment X, then inpaint that region' without brushing. Steps run sequentially and feed each other.">
+        <label class="pipeline-toggle" title="PIPELINE MODE — chain multiple edits in one submission.&#10;&#10;When on, each non-empty line of the prompt is a separate step. Each step's output feeds the next step's input.&#10;&#10;Prefix a line with [mode] to force that tool:&#10;  [generate]   make the base image from text&#10;  [kontext]    instruction edit on the previous step's image&#10;  [auto_mask]  segment a phrase, then the next [inpaint] step works on that mask&#10;  [inpaint]    masked edit (uses mask from auto_mask, or a brushed one)&#10;&#10;Example:&#10;  [generate] a knight in a forest&#10;  [auto_mask] the sky&#10;  [inpaint] dramatic sunset clouds&#10;&#10;Runs sequentially on the same GPU — long chains take time.">
           <input type="checkbox" id="pipelineToggle" />
           <span>pipeline mode (each line = a step, optional [mode] prefix)</span>
         </label>
       </div>
 
       <div class="row params">
-        <label title="20 for exploration / iteration · 28 for final render. Above 28 wastes compute — Flux is rectified flow, converges fast.">steps <input id="steps" type="number" min="1" max="60" value="28" /></label>
-        <label title="2.5–4.0 sane range. Lower = creative, higher = literal. Above 5 burns detail.">guidance <input id="guidance" type="number" step="0.1" min="0" max="20" value="3.5" /></label>
-        <label title="Clear to randomize. After each run, the actually-used seed lands here — keep it to A/B-test prompt tweaks at fixed seed.">seed <input id="seed" type="number" placeholder="random" /></label>
-        <label title="Cap on the longest edge of the input image — server downscales to this, then LANCZOS-upscales the output back to the original size. Lower = faster, less detail. Empty = use server default (shown in the profile line above).">max edge <input id="maxEdge" type="number" min="64" max="2048" step="64" placeholder="server" /></label>
-        <label title="PIL UnsharpMask after LANCZOS upscale. Counters softening from the round-trip. 'strong' can create halos on hard edges; 'light' is safe for portraits.">sharpen
+        <label title="STEPS — denoising iterations.&#10;&#10;20 = quick iteration / exploration.&#10;28 = final render (default).&#10;&#10;Above 28 wastes compute — FLUX uses rectified flow, converges fast. For schnell (generate mode) 4 is enough; for Qwen edit ~50 is the sweet spot.">steps <input id="steps" type="number" min="1" max="60" value="28" /></label>
+
+        <label title="GUIDANCE — how literally to follow the prompt (CFG scale).&#10;&#10;2.5–3.5 = creative / soft, lets the model add its own details.&#10;3.5–4.5 = balanced (default 3.5), faithful but not robotic.&#10;5.0+    = literal but burns out fine detail and color.&#10;&#10;For FLUX schnell use 0 (the model is CFG-free).">guidance <input id="guidance" type="number" step="0.1" min="0" max="20" value="3.5" /></label>
+
+        <label title="SEED — random number that determines the noise pattern.&#10;&#10;Same prompt + same seed + same params = same image, reproducibly. Clear to randomize.&#10;&#10;After each run the actually-used seed lands here — keep it to A/B-test prompt tweaks against the SAME visual roll.">seed <input id="seed" type="number" placeholder="random" /></label>
+
+        <label title="MAX EDGE — cap on the longest side of the INPUT image.&#10;&#10;Server downscales your upload to this size before diffusion, then LANCZOS-upscales the output back to the original dimensions.&#10;&#10;Lower = faster + less VRAM, but less detail. Higher = slower but sharper. Empty = use the server default (shown above the header).">max edge <input id="maxEdge" type="number" min="64" max="2048" step="64" placeholder="server" /></label>
+
+        <label title="SHARPEN — post-process unsharp mask after upscaling.&#10;&#10;Counters the softness introduced by the LANCZOS round-trip.&#10;&#10;off    = no sharpen (default).&#10;light  = subtle (safe for portraits — won't add halos).&#10;medium = noticeable, good for landscapes.&#10;strong = aggressive, can ring on hard edges.">sharpen
           <select id="sharpen">
             <option value="off" selected>off</option>
             <option value="light">light</option>
@@ -116,54 +132,56 @@
             <option value="strong">strong</option>
           </select>
         </label>
-        <label title="Upscaler used to restore the original input dimensions after diffusion. 'lanczos' = fast interpolation (legacy). 'real-esrgan 4x' = learned super-resolution that synthesizes texture detail (skin pores, fabric weave, distant foliage) instead of inventing edges from luminance gradients. Adds ~5-15s per image, ~600 MB VRAM.">upscale
+
+        <label title="UPSCALE — how to restore the original image dimensions after diffusion.&#10;&#10;lanczos       = classical interpolation. Fast, no extra VRAM, doesn't invent texture (just smooths).&#10;real-esrgan 4x = learned super-resolution. Synthesizes plausible texture (skin pores, fabric weave, distant foliage). Adds ~5-15 s and ~600 MB VRAM.&#10;&#10;Use real-esrgan when you can see softness in fine detail; lanczos when you're iterating fast.">upscale
           <select id="upscale">
             <option value="lanczos" selected>lanczos</option>
             <option value="real_esrgan_4x">real-esrgan 4x</option>
           </select>
         </label>
-        <label title="Number of variants to generate (different seeds, same prompt + params). 1 = direct run; 2-8 = pick the best afterwards. Worker is single-GPU so variants run sequentially.">variants <input id="variants" type="number" min="1" max="8" value="1" /></label>
+
+        <label title="VARIANTS — how many different versions to generate from the same prompt + params.&#10;&#10;1 = run once, get one image (default).&#10;2-8 = run multiple seeds, get a grid — pick the best one to 'approve' and chain from.&#10;&#10;All variants run sequentially on the same GPU. 4 variants ≈ 4× the time.">variants <input id="variants" type="number" min="1" max="8" value="1" /></label>
       </div>
 
       <div class="row video-row hidden" id="videoRow">
-        <label title="Which video backend to use. LTX (Lightricks) — distilled, ~30s for a 5s clip at 768x512, lower fidelity. Wan 2.2 (Alibaba) — best open-source quality late 2025, ~3 min for a 5s clip at 720p. Wan needs ~14 GB VRAM, LTX ~6-9 GB.">backend
+        <label title="VIDEO BACKEND — which model family to use.&#10;&#10;LTX (Lightricks)  = distilled, fast. ~30 s for a 5 s clip @ 768×512. Lower fidelity, great for iterating.&#10;Wan 2.2 (Alibaba) = best open-source quality late 2025. ~3 min for a 5 s clip @ 720p. Strong motion coherence.&#10;&#10;LTX needs ~6-9 GB VRAM; Wan ~14 GB — close to the 16 GB ceiling, no room for warm FLUX state.">backend
           <select id="videoBackend">
             <option value="ltx" selected>LTX (fast)</option>
             <option value="wan">Wan 2.2 (HQ)</option>
           </select>
         </label>
-        <label title="t2v = text-to-video from the prompt alone. i2v = image-to-video; the uploaded image becomes/anchors the first frame and the prompt describes motion.">subtype
+        <label title="SUBTYPE — what conditioning to use.&#10;&#10;text → video : prompt alone drives the whole clip. Composition emerges from the model's prior.&#10;image → video: the uploaded image becomes (or strongly anchors) the first frame; the prompt describes how the scene MOVES.&#10;&#10;Use i2v when you have a still you like and want to animate it — e.g. a generated portrait turning her head.">subtype
           <select id="videoSubtype">
             <option value="t2v" selected>text → video</option>
             <option value="i2v">image → video</option>
           </select>
         </label>
-        <label title="Number of frames to render. LTX is trained near 97 frames; Wan around 81. Output duration = num_frames / fps.">frames <input id="numFrames" type="number" min="8" max="257" step="1" value="81" /></label>
-        <label title="Output framerate. 24 is the native training rate for both backends. Lowering stretches motion; raising loses fidelity.">fps <input id="fps" type="number" min="8" max="60" step="1" value="24" /></label>
+        <label title="FRAMES — how many video frames to render. Duration = frames / fps. LTX is trained near 97 frames; Wan around 81. More frames = longer clip but VRAM scales with frame count.">frames <input id="numFrames" type="number" min="8" max="257" step="1" value="81" /></label>
+        <label title="FPS — output framerate. 24 is the native training rate for both backends and matches cinema standard. Lower fps stretches motion (slower clip); higher loses fidelity (the model wasn't trained at that rate).">fps <input id="fps" type="number" min="8" max="60" step="1" value="24" /></label>
         <span class="muted small">heavy pipeline — first call downloads several GB. Cannot coexist with warm Kontext / ControlNet / PuLID / IPA on a 16 GB card; the worker releases editor state before loading.</span>
       </div>
 
       <div class="row ipa-row hidden" id="ipaRow">
-        <label title="IP-Adapter conditioning strength. 0.5-0.8 typical; below 0.5 reference is barely visible, above 1.0 the reference dominates the prompt.">ref strength
+        <label title="REF STRENGTH — how strongly the uploaded reference biases the output.&#10;&#10;0.3–0.5 = light hint, reference is barely visible.&#10;0.6–0.8 = balanced (default 0.7), style is clearly there but the prompt drives content.&#10;1.0+    = reference dominates; the prompt becomes secondary.&#10;&#10;Raise if the output looks generic. Lower if it copies the reference too literally.">ref strength
           <input id="ipScale" type="number" step="0.05" min="0" max="2" value="0.7" />
         </label>
         <span class="muted small">upload a reference image (artwork / photo / concept art) as the input. The prompt drives the new scene; IP-Adapter biases style + composition toward the reference.</span>
       </div>
 
       <div class="row lora-row" id="loraRow">
-        <label class="lora-select" title="Style LoRA — biases FLUX toward a specific aesthetic (fantasy, anime, retro sci-fi…). Loaded once on first use; applies to Kontext + generate only. Inpaint + Qwen ignore it.">style LoRA
+        <label class="lora-select" title="STYLE LORA — small adapter that biases FLUX toward a specific aesthetic.&#10;&#10;Pick from the list (fantasy art, anime, retro sci-fi, photorealism, …) and the output inherits that look without you having to describe it. Useful for series consistency.&#10;&#10;Loaded once on first use; cached. Applies to Kontext + generate modes. Inpaint + Qwen ignore it.">style LoRA
           <select id="styleLora">
             <option value="">(none)</option>
           </select>
         </label>
-        <label title="Adapter weight. 1.0 = trained default; lower for subtle hint, higher for stronger style. Above ~1.3 starts breaking anatomy.">weight
+        <label title="LORA WEIGHT — how strongly the LoRA affects the output.&#10;&#10;0.4–0.7 = subtle hint, FLUX's base style still shows through.&#10;1.0     = trained default; balanced.&#10;1.2–1.3 = stronger, more dramatic style transfer.&#10;1.5+    = starts breaking anatomy / proportions.">weight
           <input id="styleLoraScale" type="number" step="0.05" min="0" max="2" value="1.0" />
         </label>
         <span id="loraTrigger" class="muted small"></span>
       </div>
 
       <div class="row accel-row hidden" id="accelRow">
-        <label class="accel-toggle" title="Hyper-SD / Flux-Turbo LoRA on the transformer. When on: 8 steps gives near-28-step quality at ~3× speed. Toggle off for final renders.">
+        <label class="accel-toggle" title="ACCELERATION LORA — Hyper-SD / Flux-Turbo distillation adapter.&#10;&#10;When on: 8 denoising steps give near-28-step quality, ~3× faster. Loaded on first use.&#10;&#10;Use during iteration / exploration. Toggle off for the final render where you want full 28-step quality.">
           <input type="checkbox" id="accelToggle" checked />
           <span>acceleration LoRA · 8 steps</span>
           <span id="accelInfo" class="muted small"></span>
@@ -173,7 +191,7 @@
       <div class="row run-row">
         <button id="run" class="run">edit image</button>
         <button id="abort" class="abort hidden" type="button">abort</button>
-        <button id="refresh" class="secondary" type="button" title="clear image, mask, prompt and result">reset</button>
+        <button id="refresh" class="secondary" type="button" title="RESET — clear input image, mask, prompt, seed, and result. Brings the panel back to a clean slate without reloading the page (GPU panel + model warm state stay alive).">reset</button>
       </div>
       <div class="row">
         <span id="status" class="muted"></span>
@@ -220,8 +238,8 @@
       </div>
       <div class="row result-row">
         <div class="result-actions hidden" id="resultActions">
-          <a id="download" download="edit.png">download</a>
-          <button id="useAsInput" class="secondary chain" type="button" title="make this result the new input for chained edits">use as input →</button>
+          <a id="download" download="edit.png" title="DOWNLOAD — save the generated image (or video for mode=video) to your computer. Filename extension matches the output type.">download</a>
+          <button id="useAsInput" class="secondary chain" type="button" title="USE AS INPUT — load this result back into the left canvas as the new input image. Lets you chain edits: generate → Kontext → inpaint → … without manually re-uploading between steps.">use as input →</button>
         </div>
       </div>
 
