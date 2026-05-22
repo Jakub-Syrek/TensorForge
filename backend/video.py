@@ -51,8 +51,12 @@ log = logging.getLogger(__name__)
 # can swap via env vars if they want a different revision.
 LTX_T2V_MODEL = "Lightricks/LTX-Video"
 LTX_I2V_MODEL = "Lightricks/LTX-Video"  # same checkpoint, separate pipeline class
-WAN_T2V_MODEL = "Wan-AI/Wan2.2-T2V-14B-Diffusers"
-WAN_I2V_MODEL = "Wan-AI/Wan2.2-I2V-14B-720P-Diffusers"
+# Wan 2.2 ships as MoE-style "A14B" (Active 14B params, ~28B total) on
+# HuggingFace. The flat "14B" variant is Wan 2.1; for 2.2 the suffix is
+# A14B and there's no separate 720P repo — resolution is set at inference
+# time. Repo IDs verified via huggingface_hub.HfApi.list_models on Wan-AI.
+WAN_T2V_MODEL = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
+WAN_I2V_MODEL = "Wan-AI/Wan2.2-I2V-A14B-Diffusers"
 
 VideoBackend = Literal["ltx", "wan"]
 VideoSubtype = Literal["t2v", "i2v"]
