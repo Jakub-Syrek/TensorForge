@@ -404,6 +404,81 @@ def test_video_unknown_subtype_rejected(client):
     assert r.status_code == 400
 
 
+def test_recent_prompts_empty_initially(client):
+    r = client.get("/api/prompts/recent")
+    assert r.status_code == 200
+    assert r.json() == {"prompts": []}
+
+
+def test_recent_prompts_returns_submitted_prompts(client):
+    client.post(
+        "/api/tasks",
+        data={"mode": "generate", "prompt": "a cat", "steps": "4"},
+    )
+    client.post(
+        "/api/tasks",
+        data={"mode": "kontext", "prompt": "remove the hat"},
+        files={"image": ("in.png", _png_bytes(), "image/png")},
+    )
+    r = client.get("/api/prompts/recent")
+    assert r.status_code == 200
+    body = r.json()
+    prompts = [p["prompt"] for p in body["prompts"]]
+    # Newest first.
+    assert prompts == ["remove the hat", "a cat"]
+    # Mode + timestamp surfaced.
+    assert body["prompts"][0]["mode"] == "kontext"
+    assert body["prompts"][1]["mode"] == "generate"
+    assert body["prompts"][0]["created_at"] is not None
+
+
+def test_recent_prompts_dedupes(client):
+    for _ in range(3):
+        client.post(
+            "/api/tasks",
+            data={"mode": "generate", "prompt": "same prompt"},
+        )
+    client.post(
+        "/api/tasks",
+        data={"mode": "generate", "prompt": "different prompt"},
+    )
+    r = client.get("/api/prompts/recent")
+    body = r.json()
+    prompts = [p["prompt"] for p in body["prompts"]]
+    # "same prompt" appears once despite three submissions.
+    assert prompts == ["different prompt", "same prompt"]
+
+
+def test_recent_prompts_respects_limit(client):
+    for i in range(15):
+        client.post(
+            "/api/tasks",
+            data={"mode": "generate", "prompt": f"prompt #{i}"},
+        )
+    r = client.get("/api/prompts/recent?limit=5")
+    body = r.json()
+    assert len(body["prompts"]) == 5
+    # Bulk-inserted prompts can share a created_at second (SQLite stores
+    # to second resolution and these inserts run in <1 ms), so order
+    # within the batch isn't deterministic. We only assert that the
+    # returned 5 are from the *latest* portion of the batch — i.e. all
+    # indices in [10..14].
+    returned = {p["prompt"] for p in body["prompts"]}
+    latest = {f"prompt #{i}" for i in range(10, 15)}
+    assert returned == latest
+
+
+def test_recent_prompts_limit_clamped(client):
+    """Out-of-range limit values clamp to [1, 100] instead of erroring."""
+    client.post("/api/tasks", data={"mode": "generate", "prompt": "x"})
+    r1 = client.get("/api/prompts/recent?limit=-5")
+    r2 = client.get("/api/prompts/recent?limit=9999")
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert len(r1.json()["prompts"]) <= 1
+    assert len(r2.json()["prompts"]) <= 100
+
+
 def test_variant_output_returns_video_mp4_for_mp4_path(client, app_env):
     """Confirm the variant output endpoint serves .mp4 with video/mp4
     media type, not image/png."""

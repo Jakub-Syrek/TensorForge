@@ -291,6 +291,92 @@ async function runExpandPrompt() {
 }
 $("expandPromptBtn").addEventListener("click", runExpandPrompt);
 
+// --- recent prompts dropdown -------------------------------------------
+/**
+ * Render a list of prompt rows into the floating panel.
+ * @param {Array<{prompt:string, mode:string, created_at:string|null}>} items
+ */
+function renderRecentPrompts(items) {
+  const panel = $("recentPromptsPanel");
+  panel.innerHTML = "";
+  if (!items || items.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "recent-prompts-empty";
+    empty.textContent = "no prompt history yet — run a generation first";
+    panel.appendChild(empty);
+    return;
+  }
+  items.forEach((it) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "recent-prompts-item";
+    row.title = it.prompt;
+    const mode = document.createElement("span");
+    mode.className = "recent-prompts-mode";
+    mode.textContent = it.mode || "?";
+    const text = document.createElement("span");
+    text.className = "recent-prompts-text";
+    text.textContent = it.prompt.length > 120 ? it.prompt.slice(0, 120) + "…" : it.prompt;
+    const time = document.createElement("span");
+    time.className = "recent-prompts-time";
+    time.textContent = formatRelativeTime(it.created_at);
+    row.appendChild(mode);
+    row.appendChild(text);
+    row.appendChild(time);
+    row.addEventListener("click", () => {
+      $("prompt").value = it.prompt;
+      hideRecentPrompts();
+      $("prompt").focus();
+    });
+    panel.appendChild(row);
+  });
+}
+
+/** Render "5m ago", "2h ago", "3d ago" — never absolute dates. */
+function formatRelativeTime(iso) {
+  if (!iso) return "";
+  const then = new Date(iso).getTime();
+  const now = Date.now();
+  const secs = Math.max(1, Math.floor((now - then) / 1000));
+  if (secs < 60) return secs + "s ago";
+  if (secs < 3600) return Math.floor(secs / 60) + "m ago";
+  if (secs < 86400) return Math.floor(secs / 3600) + "h ago";
+  return Math.floor(secs / 86400) + "d ago";
+}
+
+function hideRecentPrompts() {
+  $("recentPromptsPanel").classList.add("hidden");
+}
+
+async function showRecentPrompts() {
+  const panel = $("recentPromptsPanel");
+  // Toggle off if already open.
+  if (!panel.classList.contains("hidden")) {
+    hideRecentPrompts();
+    return;
+  }
+  panel.classList.remove("hidden");
+  panel.innerHTML = '<div class="recent-prompts-empty">loading…</div>';
+  try {
+    const r = await fetch("/api/prompts/recent?limit=20");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const body = await r.json();
+    renderRecentPrompts(body.prompts || []);
+  } catch (e) {
+    panel.innerHTML = `<div class="recent-prompts-empty">failed: ${e.message || e}</div>`;
+  }
+}
+
+$("recentPromptsBtn").addEventListener("click", showRecentPrompts);
+// Close on outside click — but not when clicking the button itself.
+document.addEventListener("click", (ev) => {
+  const panel = $("recentPromptsPanel");
+  const btn = $("recentPromptsBtn");
+  if (panel.classList.contains("hidden")) return;
+  if (panel.contains(ev.target) || btn.contains(ev.target)) return;
+  hideRecentPrompts();
+});
+
 function fitCanvases(w, h) {
   imgCanvas.width = maskCanvas.width = w;
   imgCanvas.height = maskCanvas.height = h;

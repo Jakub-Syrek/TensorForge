@@ -622,6 +622,50 @@ def list_tasks(limit: int = 20) -> JSONResponse:
         return JSONResponse({"tasks": [_serialize_task(t) for t in rows]})
 
 
+@app.get("/api/prompts/recent")
+def list_recent_prompts(limit: int = 20) -> JSONResponse:
+    """Return the N most recent unique non-empty prompts.
+
+    Sourced from the Task table — every submitted generation/edit
+    leaves its prompt here, so this doubles as a "prompt history"
+    feature without needing a separate table. Duplicates are dropped
+    (the same prompt run multiple times shows up once, at its newest
+    submission). Each entry carries the resolved mode + creation
+    timestamp so the UI can render a mode chip and relative time.
+
+    Implementation detail: SQLite lacks ``DISTINCT ON``. We over-fetch
+    ``limit * 3`` rows and dedupe in Python, which is fast on a
+    single-user desktop DB (typically <1k tasks total).
+    """
+    limit = max(1, min(100, int(limit)))
+    with get_session() as s:
+        rows = (
+            s.query(Task.prompt, Task.mode, Task.created_at)
+            .filter(Task.prompt.isnot(None))
+            .filter(Task.prompt != "")
+            .order_by(Task.created_at.desc())
+            .limit(limit * 3)
+            .all()
+        )
+        seen: set[str] = set()
+        unique: list[dict] = []
+        for prompt, mode, created_at in rows:
+            key = prompt.strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique.append(
+                {
+                    "prompt": prompt,
+                    "mode": mode,
+                    "created_at": created_at.isoformat() if created_at else None,
+                }
+            )
+            if len(unique) >= limit:
+                break
+        return JSONResponse({"prompts": unique})
+
+
 @app.post("/api/tasks/{task_id}/approve")
 def approve_variant(task_id: str, body: ApproveBody) -> JSONResponse:
     with get_session() as s:

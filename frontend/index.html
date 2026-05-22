@@ -103,8 +103,10 @@
       <div class="row prompt-row">
         <textarea id="prompt" placeholder="e.g. 'replace the sky with a dramatic sunset' (Kontext) — or for inpaint: describe only what should appear inside the mask"></textarea>
         <div class="prompt-actions">
+          <button type="button" id="recentPromptsBtn" title="RECENT PROMPTS — your last 20 unique prompts.&#10;&#10;Click to open a list of previously submitted prompts. Click any entry to drop it into the textarea. Each item shows which mode it was run as + how long ago.&#10;&#10;Sourced from your local task history — nothing leaves your machine.">📋 recent</button>
           <button type="button" id="expandPromptBtn" title="EXPAND — rewrite a short prompt into a full FLUX-style description.&#10;&#10;Turns 'cat on a chair' into 'a tabby cat lounging on a worn leather armchair by a sunlit window, dust motes drifting in the warm light, shallow depth of field, photorealistic, 50mm lens'.&#10;&#10;Better prompts → better images. The result replaces your textarea — Ctrl+Z inside the textarea brings the original back.&#10;&#10;Tech: Qwen2.5-1.5B-Instruct. ~3 GB VRAM, ~1 s on a warm model.">✨ expand</button>
         </div>
+        <div id="recentPromptsPanel" class="recent-prompts-panel hidden"></div>
         <span id="expandStatus" class="muted small"></span>
       </div>
 
