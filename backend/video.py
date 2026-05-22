@@ -176,15 +176,21 @@ class VideoGenerator:
             self._pipe = self._load_wan(subtype)
         self._active_key = key
         if torch.cuda.is_available():
-            # Both LTX and Wan benefit from sequential CPU offload on a
-            # 16 GB card — keeps activations in VRAM while parking
-            # large idle blocks (T5, VAE) on CPU between steps.
+            # VRAM strategy:
+            #  - LTX-Video weights ~8-9 GB resident; fits comfortably on a
+            #    16 GB card with full residency. cpu_offload would swap
+            #    every block over PCIe (240 W spike -> 27 W idle pattern),
+            #    making inference 3-5x slower than necessary. Force .to("cuda").
+            #  - Wan 2.2 A14B is ~28 GB across two experts + T5 + VAE; it
+            #    cannot stay fully resident. enable_model_cpu_offload keeps
+            #    activations in VRAM while parking idle blocks on CPU.
             try:
-                self._pipe.enable_model_cpu_offload()
+                if backend == "ltx":
+                    self._pipe.to("cuda")
+                else:
+                    self._pipe.enable_model_cpu_offload()
             except Exception:
-                # Older pipelines may not support the hook; fall back to
-                # full residency.
-                self._pipe.to("cuda")
+                self._pipe.enable_model_cpu_offload()
         log.info("video pipeline ready")
 
     def _load_ltx(self, subtype: VideoSubtype):  # pragma: no cover — GPU + downloads
